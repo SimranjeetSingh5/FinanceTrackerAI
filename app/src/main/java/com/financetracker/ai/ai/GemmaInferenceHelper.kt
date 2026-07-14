@@ -2,114 +2,138 @@ package com.financetracker.ai.ai
 
 import android.content.Context
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
-import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession.LlmInferenceSessionOptions
+import com.google.mediapipe.tasks.genai.llminference.ProgressListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Thin wrapper around MediaPipe's LLM Inference API running Gemma fully on-device.
- *
- * There is no network call and no per-token billing here — the model runs locally on the
- * phone's CPU/GPU, so "unlimited tokens" in the sense of no usage quota is true by construction.
- * The real ceiling is the model's context window (set via maxTokens below, e.g. Gemma 3 1B/2B
- * variants commonly support 4096-8192 tokens) and on-device compute/battery.
- *
- * Setup required by the user (see README.md):
- *  1. Download a Gemma .task model file (e.g. gemma-3-1b-it-int4.task) from Kaggle/HuggingFace's
- *     LiteRT/MediaPipe model hub.
- *  2. Copy it to the path returned by [defaultModelPath], or let the user pick it via SAF and
- *     copy it there on first launch.
+ * 100% Offline Local Inference Wrapper using stateful LlmInferenceSession.
  */
 class GemmaInferenceHelper(private val context: Context) {
 
-    private var llmInference: LlmInference? = null
-    private var session: LlmInferenceSession? = null
+    private val inferenceEngine = AtomicReference<LlmInference?>(null)
 
-    var isReady: Boolean = false
-        private set
+    fun getLocalModelFile(): File {
+        return File(context.filesDir, "gemma_local_model.task")
+    }
 
-    fun defaultModelPath(): String =
-        File(context.getExternalFilesDir(null), "models/gemma-model.task").absolutePath
+    fun isModelDownloaded(): Boolean {
+        val file = getLocalModelFile()
+        return file.exists() && file.length() > 0
+    }
 
-    fun modelFileExists(): Boolean = File(defaultModelPath()).exists()
+    fun initialize(maxTokens: Int = 2048): Result<Unit> {
+        if (inferenceEngine.get() != null) {
+            return Result.success(Unit)
+        }
 
-    /**
-     * Loads the model into memory. This is expensive (seconds, depending on model size and
-     * device) and should be called once, off the main thread, e.g. from a splash/setup screen.
-     */
-    suspend fun initialize(
-        modelPath: String = defaultModelPath(),
-        maxTokens: Int = 4096,
-        preferGpu: Boolean = true,
-        temperature: Float = 0.7f,
-        topK: Int = 40
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        if (!isModelDownloaded()) {
+            return Result.failure(
+                IllegalStateException("Missing local binary target at: ${getLocalModelFile().absolutePath}")
+            )
+        }
+
+        return try {
             val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
+                .setModelPath(getLocalModelFile().absolutePath)
                 .setMaxTokens(maxTokens)
-                .setPreferredBackend(if (preferGpu) Backend.GPU else Backend.CPU)
                 .build()
 
-            llmInference = LlmInference.createFromOptions(context, options)
-
-            val sessionOptions = LlmInferenceSessionOptions.builder()
-                .setTemperature(temperature)
-                .setTopK(topK)
-                .build()
-
-            session = LlmInferenceSession.createFromOptions(llmInference, sessionOptions)
-            isReady = true
+            inferenceEngine.set(LlmInference.createFromOptions(context, options))
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
-    /** One-shot, blocking-ish generation (still runs on IO dispatcher). Good for short prompts
-     *  like categorizing a single transaction. */
-    suspend fun generate(prompt: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val activeSession = session ?: error("Gemma model not initialized. Call initialize() first.")
-            activeSession.addQueryChunk(prompt)
-            activeSession.generateResponse()
-        }
-    }
-
-    /** Streaming generation for the chat assistant screen — emits partial tokens as they're
-     *  produced so the UI can show a live typing effect. */
-    fun generateStream(prompt: String): Flow<String> = callbackFlow {
-        val activeSession = session
-        if (activeSession == null) {
-            close(IllegalStateException("Gemma model not initialized. Call initialize() first."))
-            return@callbackFlow
-        }
-        activeSession.addQueryChunk(prompt)
-        activeSession.generateResponseAsync { partialResult, done ->
-            trySend(partialResult)
-            if (done) close()
-        }
-        awaitClose { /* MediaPipe session cleans up internally on completion */ }
-    }
-
-    fun resetSession(temperature: Float = 0.7f, topK: Int = 40) {
-        session?.close()
-        val inference = llmInference ?: return
-        val sessionOptions = LlmInferenceSessionOptions.builder()
+    private fun createSessionOptions(temperature: Float, topK: Int): LlmInferenceSession.LlmInferenceSessionOptions {
+        return LlmInferenceSession.LlmInferenceSessionOptions.builder()
             .setTemperature(temperature)
             .setTopK(topK)
             .build()
-        session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
     }
 
-    fun close() {
-        session?.close()
-        llmInference?.close()
-        session = null
-        llmInference = null
-        isReady = false
+    /**
+     * One-shot generation. Uses Guava future blocking safely off the main thread.
+     */
+    suspend fun generateResponse(
+        prompt: String,
+        temperature: Float = 0.2f,
+        topK: Int = 40
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val engine = inferenceEngine.get()
+            ?: return@withContext Result.failure(IllegalStateException("Engine not initialized."))
+
+        var session: LlmInferenceSession? = null
+        try {
+            val sessionOptions = createSessionOptions(temperature, topK)
+            session = LlmInferenceSession.createFromOptions(engine, sessionOptions)
+
+            session.addQueryChunk(prompt)
+            // .get() blocks the thread safely inside Dispatchers.IO until the ListenableFuture resolves
+            val response = session.generateResponseAsync().get()
+
+            Result.success(response)
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            try { session?.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Streams response chunks via an inline ProgressListener mapped to a Coroutine Flow.
+     */
+    fun generateResponseStream(
+        prompt: String,
+        temperature: Float = 0.2f,
+        topK: Int = 40
+    ): Flow<String> = callbackFlow {
+        val engine = inferenceEngine.get()
+        if (engine == null) {
+            close(IllegalStateException("Engine not initialized."))
+            return@callbackFlow
+        }
+
+        var session: LlmInferenceSession? = null
+        try {
+            val sessionOptions = createSessionOptions(temperature, topK)
+            session = LlmInferenceSession.createFromOptions(engine, sessionOptions)
+
+            session.addQueryChunk(prompt)
+
+            // Instantiate the required ProgressListener interface explicitly
+            val progressListener = ProgressListener<String> { partialResult, isComplete ->
+                if (!partialResult.isNullOrEmpty()) {
+                    trySend(partialResult)
+                }
+                if (isComplete) {
+                    close()
+                }
+            }
+
+            session.generateResponseAsync(progressListener)
+
+        } catch (e: Exception) {
+            close(e)
+        }
+
+        awaitClose {
+            try { session?.close() } catch (_: Exception) {}
+        }
+    }.flowOn(Dispatchers.IO)
+
+    fun release() {
+        val activeEngine = inferenceEngine.getAndSet(null)
+        try {
+            activeEngine?.close()
+        } catch (_: Exception) {}
     }
 }

@@ -48,6 +48,6 @@ class MainActivity : FragmentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        (application as FinanceApp).gemmaHelper.close()
+        (application as FinanceApp).gemmaHelper.release()
     }
 }

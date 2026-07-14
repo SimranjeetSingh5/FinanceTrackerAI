@@ -8,14 +8,19 @@ import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.Transaction
 import com.financetracker.ai.data.TransactionType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 sealed class ModelState {
     object NotDownloaded : ModelState()
+    object Downloading : ModelState()
     object Loading : ModelState()
     object Ready : ModelState()
     data class Error(val message: String) : ModelState()
@@ -26,6 +31,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val app = application as FinanceApp
     private val repo = app.repository
     private val gemma = app.gemmaHelper
+
+    // Define your direct cloud hosted Google Drive target link here
+    private val modelDownloadUrl = "https://drive.google.com/file/d/1nwJgDX5zVUAguvSS0ZzFHNbCLse76Dbc/view?usp=sharing"
 
     private val _modelState = MutableStateFlow<ModelState>(ModelState.NotDownloaded)
     val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
@@ -61,28 +69,75 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { repo.allTransactions.collect { _transactions.value = it; refreshTotals(); refreshAccountBalances() } }
         viewModelScope.launch { repo.allCategories.collect { _categories.value = it } }
         viewModelScope.launch { repo.allAccounts.collect { list -> _accounts.value = list; refreshAccountBalances() } }
-        if (gemma.modelFileExists()) initializeModel()
+
+        // Sync local states reactively on boot
+        checkAndInitializeModel()
+    }
+
+    private fun checkAndInitializeModel() {
+        if (gemma.isModelDownloaded()) {
+            initializeModel()
+        } else {
+            _modelState.value = ModelState.NotDownloaded
+        }
     }
 
     fun initializeModel() {
         viewModelScope.launch {
             _modelState.value = ModelState.Loading
-            gemma.initialize(modelPath = gemma.defaultModelPath())
-                .onSuccess { _modelState.value = ModelState.Ready }
-                .onFailure { _modelState.value = ModelState.Error(it.message ?: "Failed to load Gemma model") }
+            withContext(Dispatchers.IO) {
+                gemma.initialize()
+            }.onSuccess {
+                _modelState.value = ModelState.Ready
+            }.onFailure {
+                _modelState.value = ModelState.Error(it.message ?: "Failed to load Gemma engine runtime.")
+            }
         }
     }
 
-    fun installModelFromUri(inputStream: java.io.InputStream) {
+    /**
+     * Downloads the hosted .task package programmatically from Google Drive/Cloud storage.
+     */
+    fun downloadAndInstallModel() {
         viewModelScope.launch {
-            _modelState.value = ModelState.Loading
-            try {
-                val dest = File(gemma.defaultModelPath())
-                dest.parentFile?.mkdirs()
-                dest.outputStream().use { out -> inputStream.copyTo(out) }
+            _modelState.value = ModelState.Downloading
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    val destFile = gemma.getLocalModelFile()
+                    destFile.parentFile?.mkdirs()
+                    val url = URL(modelDownloadUrl)
+                    var connection = url.openConnection() as HttpURLConnection
+                    connection.connectTimeout = 15000
+                    connection.readTimeout = 30000
+                    connection.instanceFollowRedirects = true
+
+                    var responseCode = connection.responseCode
+
+                    if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM) {
+                        val newUrl = connection.getHeaderField("Location")
+                        connection = URL(newUrl).openConnection() as HttpURLConnection
+                        responseCode = connection.responseCode
+                    }
+
+                    if (responseCode == HttpURLConnection.HTTP_OK) {
+                        connection.inputStream.use { input ->
+                            destFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } catch (e: Exception) {
+                    false
+                }
+            }
+
+            if (success) {
                 initializeModel()
-            } catch (e: Exception) {
-                _modelState.value = ModelState.Error(e.message ?: "Failed to install model")
+            } else {
+                _modelState.value = ModelState.Error("Download failed. Verify cloud storage configurations and endpoint visibility.")
             }
         }
     }
@@ -104,7 +159,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 type = type,
                 accountId = accountId,
                 manualCategoryId = manualCategoryId,
-                useAiCategorization = manualCategoryId == null && modelState.value == ModelState.Ready,
+                useAiCategorization = manualCategoryId == null && _modelState.value == ModelState.Ready,
                 transferToAccountId = transferToAccountId
             )
         }

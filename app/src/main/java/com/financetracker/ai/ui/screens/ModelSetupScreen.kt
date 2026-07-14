@@ -1,16 +1,15 @@
 package com.financetracker.ai.ui.screens
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import com.financetracker.ai.viewmodel.ModelState
@@ -18,62 +17,102 @@ import com.financetracker.ai.viewmodel.ModelState
 @Composable
 fun ModelSetupScreen(viewModel: FinanceViewModel) {
     val state by viewModel.modelState.collectAsState()
-    val context = LocalContext.current
-
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
-            context.contentResolver.openInputStream(it)?.use { stream ->
-                viewModel.installModelFromUri(stream)
-            }
-        }
-    }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(64.dp))
-        Spacer(Modifier.height(16.dp))
-        Text("Set up your on-device AI", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "FinanceTracker AI runs Gemma entirely on your phone — nothing you type ever " +
-                "leaves the device, and there's no per-message quota since it's not a cloud API. " +
-                "You'll need to load a Gemma .task model file once.",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-        )
-        Spacer(Modifier.height(24.dp))
+        val iconColor = if (state is ModelState.Ready) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        }
 
-        when (state) {
+        Icon(
+            imageVector = if (state is ModelState.Ready) Icons.Filled.CheckCircle else Icons.Filled.CloudDownload,
+            contentDescription = null,
+            modifier = Modifier.size(64.dp),
+            tint = iconColor
+        )
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "Set up your on-device AI",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            text = "FinanceTracker AI runs Gemma entirely locally on your phone. Nothing you type " +
+                    "ever leaves the device, there are no cloud API keys required, and inference is completely free. " +
+                    "Tap download below to sync the model assets to your secure storage directory.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(32.dp))
+
+        when (val currentState = state) {
             is ModelState.NotDownloaded -> {
-                Button(onClick = { filePicker.launch("*/*") }) {
-                    Text("Choose downloaded .task file")
+                Button(
+                    onClick = { viewModel.downloadAndInstallModel() },
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Text("Download AI Model from Cloud")
                 }
-                Spacer(Modifier.height(8.dp))
+            }
+            is ModelState.Downloading -> {
+                CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    "Get a model from Kaggle's Gemma page (search \"Gemma 3 MediaPipe\") " +
-                        "and download the int4 .task variant sized for mobile, then pick it here.",
-                    style = MaterialTheme.typography.bodySmall
+                    text = "Downloading model payload from cloud storage...",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center
                 )
             }
             is ModelState.Loading -> {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(8.dp))
-                Text("Loading model into memory…")
+                CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Initializing machine learning environment into local memory...",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center
+                )
             }
             is ModelState.Ready -> {
-                Text("Model ready ✓", color = MaterialTheme.colorScheme.primary)
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                ) {
+                    Text(
+                        text = "Local Model Operational ✓",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
             is ModelState.Error -> {
                 Text(
-                    (state as ModelState.Error).message,
-                    color = MaterialTheme.colorScheme.error
+                    text = currentState.message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center
                 )
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { filePicker.launch("*/*") }) {
-                    Text("Try a different file")
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { viewModel.downloadAndInstallModel() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer)
+                ) {
+                    Text("Retry Download Pipeline")
                 }
             }
         }
