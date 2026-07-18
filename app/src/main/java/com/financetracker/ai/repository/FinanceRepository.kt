@@ -218,8 +218,6 @@ class FinanceRepository(
         return cal.timeInMillis
     }
 
-    // ---------- AI ----------
-
     suspend fun getInsight(periodLabel: String): Result<String> {
         val txs = transactionDao.recent(60)
         val categories = categoryDao.getAllOnce()

@@ -1,6 +1,9 @@
 package com.financetracker.ai.viewmodel
 
 import android.app.Application
+import android.app.DownloadManager
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.financetracker.ai.FinanceApp
@@ -15,8 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 sealed class ModelState {
     object NotDownloaded : ModelState()
@@ -32,8 +35,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val repo = app.repository
     private val gemma = app.gemmaHelper
 
-    // Define your direct cloud hosted Google Drive target link here
-    private val modelDownloadUrl = "https://drive.google.com/file/d/1nwJgDX5zVUAguvSS0ZzFHNbCLse76Dbc/view?usp=sharing"
+    private val modelDownloadUrl = "https://storage.to/0zQRQhzZ0/download?expires=1784364026&signature=539085c8121b8b3db8c2f54c2ac1af8ab6903c2a9c5af092d6b9a481359a9afd"
 
     private val _modelState = MutableStateFlow<ModelState>(ModelState.NotDownloaded)
     val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
@@ -70,7 +72,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { repo.allCategories.collect { _categories.value = it } }
         viewModelScope.launch { repo.allAccounts.collect { list -> _accounts.value = list; refreshAccountBalances() } }
 
-        // Sync local states reactively on boot
         checkAndInitializeModel()
     }
 
@@ -85,9 +86,13 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun initializeModel() {
         viewModelScope.launch {
             _modelState.value = ModelState.Loading
-            withContext(Dispatchers.IO) {
-                gemma.initialize()
-            }.onSuccess {
+
+            // Fixed the syntax by safely capturing gemma initialization into a Result block
+            val result = withContext(Dispatchers.IO) {
+                runCatching { gemma.initialize() }
+            }
+
+            result.onSuccess {
                 _modelState.value = ModelState.Ready
             }.onFailure {
                 _modelState.value = ModelState.Error(it.message ?: "Failed to load Gemma engine runtime.")
@@ -98,46 +103,82 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     /**
      * Downloads the hosted .task package programmatically from Google Drive/Cloud storage.
      */
+
+
     fun downloadAndInstallModel() {
         viewModelScope.launch {
             _modelState.value = ModelState.Downloading
-            val success = withContext(Dispatchers.IO) {
-                try {
-                    val destFile = gemma.getLocalModelFile()
-                    destFile.parentFile?.mkdirs()
-                    val url = URL(modelDownloadUrl)
-                    var connection = url.openConnection() as HttpURLConnection
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 30000
-                    connection.instanceFollowRedirects = true
 
-                    var responseCode = connection.responseCode
+            try {
+                val destFile = gemma.getLocalModelFile()
+                if (destFile.exists()) destFile.delete()
+                destFile.parentFile?.mkdirs()
 
-                    if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM) {
-                        val newUrl = connection.getHeaderField("Location")
-                        connection = URL(newUrl).openConnection() as HttpURLConnection
-                        responseCode = connection.responseCode
+                val tempStagingFile = File(app.getExternalCacheDir(), "gemma_staging.task")
+                if (tempStagingFile.exists()) tempStagingFile.delete()
+
+                val downloadManager = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                val request = DownloadManager.Request(Uri.parse(modelDownloadUrl))
+                    .setTitle("Downloading AI Model")
+                    .setDescription("Fetching Gemma local task package...")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                    .setDestinationUri(Uri.fromFile(tempStagingFile))
+                    .addRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+                val downloadId = downloadManager.enqueue(request)
+
+                val success = withContext(Dispatchers.IO) {
+                    var downloading = true
+                    var isSuccessful = false
+                    while (downloading) {
+                        val query = DownloadManager.Query().setFilterById(downloadId)
+                        val cursor = downloadManager.query(query)
+                        if (cursor.moveToFirst()) {
+                            val statusColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                            if (statusColumnIndex != -1) {
+                                val status = cursor.getInt(statusColumnIndex)
+                                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                                    downloading = false
+                                    isSuccessful = true
+                                } else if (status == DownloadManager.STATUS_FAILED) {
+                                    downloading = false
+                                }
+                            }
+                        } else {
+                            downloading = false
+                        }
+                        cursor.close()
+                        if (downloading) {
+                            Thread.sleep(1000)
+                        }
                     }
+                    isSuccessful
+                }
 
-                    if (responseCode == HttpURLConnection.HTTP_OK) {
-                        connection.inputStream.use { input ->
-                            destFile.outputStream().use { output ->
+                if (success && tempStagingFile.exists()) {
+                    _modelState.value = ModelState.Loading
+
+                    withContext(Dispatchers.IO) {
+                        FileInputStream(tempStagingFile).use { input ->
+                            FileOutputStream(destFile).use { output ->
                                 input.copyTo(output)
                             }
                         }
-                        true
-                    } else {
-                        false
+                        tempStagingFile.delete()
                     }
-                } catch (e: Exception) {
-                    false
-                }
-            }
 
-            if (success) {
-                initializeModel()
-            } else {
-                _modelState.value = ModelState.Error("Download failed. Verify cloud storage configurations and endpoint visibility.")
+                    if (destFile.exists() && destFile.length() > 50_000_000) {
+                        initializeModel()
+                    } else {
+                        _modelState.value = ModelState.Error("Downloaded file is empty or corrupted.")
+                    }
+                } else {
+                    _modelState.value = ModelState.Error("System DownloadManager failed to download the file.")
+                }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _modelState.value = ModelState.Error("Download pipeline failed: ${e.message}")
             }
         }
     }
