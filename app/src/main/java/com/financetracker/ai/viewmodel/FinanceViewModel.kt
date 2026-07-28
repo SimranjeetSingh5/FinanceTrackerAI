@@ -32,6 +32,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val app = application as FinanceApp
     private val repo = app.repository
     private val gemma = app.gemmaHelper
+    private val settings = app.settingsStore
+
+    val currency: StateFlow<String> = settings.currencyCodeFlow
 
     // IMPORTANT: This is Temporary link update this URL or hosts it permanently on Firebase.
     private val modelDownloadUrl = "https://storage.to/Q61rIvpxi/download?expires=1785241528&signature=212dea9cd0f77976e3cbdc807214b2f9da448ab4d7c49c95a3f985fb94fac952"

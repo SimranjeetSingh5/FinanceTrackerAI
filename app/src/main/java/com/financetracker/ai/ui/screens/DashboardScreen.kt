@@ -15,6 +15,7 @@ import com.financetracker.ai.ui.components.iconFor
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import com.financetracker.ai.viewmodel.ModelState
 import java.text.NumberFormat
+import java.util.Currency
 
 @Composable
 fun DashboardScreen(viewModel: FinanceViewModel) {
@@ -25,7 +26,18 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
     val insight by viewModel.insight.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
     val netWorth by viewModel.netWorth.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+
+    val currencyCode by viewModel.currency.collectAsState()
+
+    val currencyFormatter = remember(currencyCode) {
+        NumberFormat.getCurrencyInstance().apply {
+            try {
+                currency = Currency.getInstance(currencyCode)
+            } catch (e: Exception) {
+                // Safe fallback if currencyCode is invalid
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -35,7 +47,11 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp)) {
                     Text("Net worth", style = MaterialTheme.typography.labelLarge)
-                    Text(currency.format(netWorth), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        currencyFormatter.format(netWorth),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -48,11 +64,19 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Column {
                             Text("Income", style = MaterialTheme.typography.bodySmall)
-                            Text(currency.format(income), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text(
+                                currencyFormatter.format(income),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text("Expenses", style = MaterialTheme.typography.bodySmall)
-                            Text(currency.format(expense), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text(
+                                currencyFormatter.format(expense),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                     Spacer(Modifier.height(12.dp))
@@ -99,13 +123,13 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
                 supportingContent = {
                     Text(
                         (category?.name ?: "Uncategorized") +
-                            if (tx.aiCategorized) " · AI categorized" else ""
+                                if (tx.aiCategorized) " · AI categorized" else ""
                     )
                 },
                 leadingContent = { Icon(iconFor(category?.icon ?: "more"), contentDescription = null) },
                 trailingContent = {
                     Text(
-                        currency.format(tx.amount),
+                        currencyFormatter.format(tx.amount),
                         color = if (tx.type.name == "EXPENSE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
                     )

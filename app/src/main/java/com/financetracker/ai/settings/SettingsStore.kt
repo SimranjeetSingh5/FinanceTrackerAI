@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
 
 /**
@@ -28,28 +31,59 @@ class SettingsStore(context: Context) {
         context.getSharedPreferences("finance_tracker_prefs_fallback", Context.MODE_PRIVATE)
     }
 
+    private val _currencyCode = MutableStateFlow(prefs.getString(KEY_CURRENCY, "USD") ?: "USD")
+    val currencyCodeFlow: StateFlow<String> = _currencyCode.asStateFlow()
+
+    private val _isAppLockEnabled = MutableStateFlow(prefs.getBoolean(KEY_LOCK_ENABLED, false))
+    val isAppLockEnabledFlow: StateFlow<Boolean> = _isAppLockEnabled.asStateFlow()
+
+    private val _isBiometricEnabled = MutableStateFlow(prefs.getBoolean(KEY_BIOMETRIC_ENABLED, true))
+    val isBiometricEnabledFlow: StateFlow<Boolean> = _isBiometricEnabled.asStateFlow()
+
+    private val _budgetAlertsEnabled = MutableStateFlow(prefs.getBoolean(KEY_BUDGET_ALERTS, true))
+    val budgetAlertsEnabledFlow: StateFlow<Boolean> = _budgetAlertsEnabled.asStateFlow()
+
+    private val _recurringRemindersEnabled = MutableStateFlow(prefs.getBoolean(KEY_RECURRING_REMINDERS, true))
+    val recurringRemindersEnabledFlow: StateFlow<Boolean> = _recurringRemindersEnabled.asStateFlow()
+
     var currencyCode: String
-        get() = prefs.getString(KEY_CURRENCY, "USD") ?: "USD"
-        set(value) = prefs.edit().putString(KEY_CURRENCY, value).apply()
+        get() = _currencyCode.value
+        set(value) {
+            prefs.edit().putString(KEY_CURRENCY, value).apply()
+            _currencyCode.value = value
+        }
 
     var isAppLockEnabled: Boolean
-        get() = prefs.getBoolean(KEY_LOCK_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_LOCK_ENABLED, value).apply()
+        get() = _isAppLockEnabled.value
+        set(value) {
+            prefs.edit().putBoolean(KEY_LOCK_ENABLED, value).apply()
+            _isAppLockEnabled.value = value
+        }
 
     var isBiometricEnabled: Boolean
-        get() = prefs.getBoolean(KEY_BIOMETRIC_ENABLED, true)
-        set(value) = prefs.edit().putBoolean(KEY_BIOMETRIC_ENABLED, value).apply()
+        get() = _isBiometricEnabled.value
+        set(value) {
+            prefs.edit().putBoolean(KEY_BIOMETRIC_ENABLED, value).apply()
+            _isBiometricEnabled.value = value
+        }
 
     var budgetAlertsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_BUDGET_ALERTS, true)
-        set(value) = prefs.edit().putBoolean(KEY_BUDGET_ALERTS, value).apply()
+        get() = _budgetAlertsEnabled.value
+        set(value) {
+            prefs.edit().putBoolean(KEY_BUDGET_ALERTS, value).apply()
+            _budgetAlertsEnabled.value = value
+        }
 
     var recurringRemindersEnabled: Boolean
-        get() = prefs.getBoolean(KEY_RECURRING_REMINDERS, true)
-        set(value) = prefs.edit().putBoolean(KEY_RECURRING_REMINDERS, value).apply()
+        get() = _recurringRemindersEnabled.value
+        set(value) {
+            prefs.edit().putBoolean(KEY_RECURRING_REMINDERS, value).apply()
+            _recurringRemindersEnabled.value = value
+        }
 
     fun setPin(pin: String) {
         prefs.edit().putString(KEY_PIN_HASH, hash(pin)).apply()
+        isAppLockEnabled = true
     }
 
     fun hasPinSet(): Boolean = prefs.contains(KEY_PIN_HASH)
