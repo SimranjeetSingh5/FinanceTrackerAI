@@ -91,7 +91,7 @@ fun AppNavHost() {
             composable("goals") { GoalsScreen(goalsViewModel) }
             composable("chat") { ChatScreen(chatViewModel) }
             composable("setup") { ModelSetupScreen(financeViewModel) }
-            composable("settings") { SettingsScreen(settingsViewModel) }
+            composable("settings") { SettingsScreen({navController.popBackStack()}, settingsViewModel) }
         }
     }
 }

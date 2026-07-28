@@ -2,8 +2,11 @@ package com.financetracker.ai.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -12,7 +15,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.viewmodel.SettingsViewModel
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
+fun SettingsScreen(
+    onBackClick: (() -> Unit)? = null,
+    viewModel: SettingsViewModel = viewModel()
+) {
     val context = LocalContext.current
     val currency by viewModel.currency.collectAsState()
     val appLockEnabled by viewModel.appLockEnabled.collectAsState()
@@ -23,7 +29,29 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     var showPinDialog by remember { mutableStateOf(false) }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (onBackClick != null) {
+                    IconButton(
+                        onClick = onBackClick,
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back"
+                        )
+                    }
+                }
+                Text(
+                    text = "Settings",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
         item { Spacer(Modifier.height(16.dp)) }
 
         item { SectionHeader("Currency") }
@@ -34,7 +62,13 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 OutlinedButton(onClick = { expanded = true }) { Text(currency) }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     options.forEach { code ->
-                        DropdownMenuItem(text = { Text(code) }, onClick = { viewModel.setCurrency(code); expanded = false })
+                        DropdownMenuItem(
+                            text = { Text(code) },
+                            onClick = {
+                                viewModel.setCurrency(code)
+                                expanded = false
+                            }
+                        )
                     }
                 }
             }
