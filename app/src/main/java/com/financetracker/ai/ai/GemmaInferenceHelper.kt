@@ -41,12 +41,14 @@ class GemmaInferenceHelper(private val context: Context) {
         }
 
         return try {
-            val options = LlmInference.LlmInferenceOptions.builder()
+            // Force CPU backend directly to avoid OpenCL invalid work group size crashes on Adreno/Mali GPUs
+            val cpuOptions = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(getLocalModelFile().absolutePath)
                 .setMaxTokens(maxTokens)
+                .setPreferredBackend(LlmInference.Backend.CPU)
                 .build()
 
-            inferenceEngine.set(LlmInference.createFromOptions(context, options))
+            inferenceEngine.set(LlmInference.createFromOptions(context, cpuOptions))
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -60,16 +62,21 @@ class GemmaInferenceHelper(private val context: Context) {
             .build()
     }
 
-    /**
-     * One-shot generation. Uses Guava future blocking safely off the main thread.
-     */
     suspend fun generateResponse(
         prompt: String,
         temperature: Float = 0.2f,
         topK: Int = 40
     ): Result<String> = withContext(Dispatchers.IO) {
-        val engine = inferenceEngine.get()
-            ?: return@withContext Result.failure(IllegalStateException("Engine not initialized."))
+        val engine = inferenceEngine.get() ?: run {
+            val initResult = initialize()
+            if (initResult.isFailure) {
+                return@withContext Result.failure(
+                    initResult.exceptionOrNull() ?: IllegalStateException("Engine not initialized.")
+                )
+            }
+            inferenceEngine.get()
+                ?: return@withContext Result.failure(IllegalStateException("Engine not initialized."))
+        }
 
         var session: LlmInferenceSession? = null
         try {
@@ -77,7 +84,6 @@ class GemmaInferenceHelper(private val context: Context) {
             session = LlmInferenceSession.createFromOptions(engine, sessionOptions)
 
             session.addQueryChunk(prompt)
-            // .get() blocks the thread safely inside Dispatchers.IO until the ListenableFuture resolves
             val response = session.generateResponseAsync().get()
 
             Result.success(response)
@@ -88,18 +94,21 @@ class GemmaInferenceHelper(private val context: Context) {
         }
     }
 
-    /**
-     * Streams response chunks via an inline ProgressListener mapped to a Coroutine Flow.
-     */
     fun generateResponseStream(
         prompt: String,
         temperature: Float = 0.2f,
         topK: Int = 40
     ): Flow<String> = callbackFlow {
-        val engine = inferenceEngine.get()
-        if (engine == null) {
-            close(IllegalStateException("Engine not initialized."))
-            return@callbackFlow
+        val engine = inferenceEngine.get() ?: run {
+            val initResult = initialize()
+            if (initResult.isFailure) {
+                close(initResult.exceptionOrNull() ?: IllegalStateException("Engine not initialized."))
+                return@callbackFlow
+            }
+            inferenceEngine.get() ?: run {
+                close(IllegalStateException("Engine not initialized."))
+                return@callbackFlow
+            }
         }
 
         var session: LlmInferenceSession? = null
@@ -109,7 +118,6 @@ class GemmaInferenceHelper(private val context: Context) {
 
             session.addQueryChunk(prompt)
 
-            // Instantiate the required ProgressListener interface explicitly
             val progressListener = ProgressListener<String> { partialResult, isComplete ->
                 if (!partialResult.isNullOrEmpty()) {
                     trySend(partialResult)

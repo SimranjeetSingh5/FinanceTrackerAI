@@ -1,9 +1,6 @@
 package com.financetracker.ai.viewmodel
 
 import android.app.Application
-import android.app.DownloadManager
-import android.content.Context
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.financetracker.ai.FinanceApp
@@ -18,8 +15,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 sealed class ModelState {
     object NotDownloaded : ModelState()
@@ -35,7 +33,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val repo = app.repository
     private val gemma = app.gemmaHelper
 
-    private val modelDownloadUrl = "https://storage.to/0zQRQhzZ0/download?expires=1784364026&signature=539085c8121b8b3db8c2f54c2ac1af8ab6903c2a9c5af092d6b9a481359a9afd"
+    // IMPORTANT: This is Temporary link update this URL or hosts it permanently on Firebase.
+    private val modelDownloadUrl = "https://storage.to/Q61rIvpxi/download?expires=1785241528&signature=212dea9cd0f77976e3cbdc807214b2f9da448ab4d7c49c95a3f985fb94fac952"
 
     private val _modelState = MutableStateFlow<ModelState>(ModelState.NotDownloaded)
     val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
@@ -87,7 +86,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _modelState.value = ModelState.Loading
 
-            // Fixed the syntax by safely capturing gemma initialization into a Result block
             val result = withContext(Dispatchers.IO) {
                 runCatching { gemma.initialize() }
             }
@@ -100,87 +98,122 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Downloads the hosted .task package programmatically from Google Drive/Cloud storage.
-     */
-
-
     fun downloadAndInstallModel() {
         viewModelScope.launch {
             _modelState.value = ModelState.Downloading
 
             try {
                 val destFile = gemma.getLocalModelFile()
-                if (destFile.exists()) destFile.delete()
+                val tempFile = File(destFile.parentFile, "${destFile.name}.tmp")
+
+                // Cleanup existing files before starting fresh
+                if (tempFile.exists()) tempFile.delete()
                 destFile.parentFile?.mkdirs()
 
-                val tempStagingFile = File(app.getExternalCacheDir(), "gemma_staging.task")
-                if (tempStagingFile.exists()) tempStagingFile.delete()
-
-                val downloadManager = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                val request = DownloadManager.Request(Uri.parse(modelDownloadUrl))
-                    .setTitle("Downloading AI Model")
-                    .setDescription("Fetching Gemma local task package...")
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-                    .setDestinationUri(Uri.fromFile(tempStagingFile))
-                    .addRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-
-                val downloadId = downloadManager.enqueue(request)
-
-                val success = withContext(Dispatchers.IO) {
-                    var downloading = true
-                    var isSuccessful = false
-                    while (downloading) {
-                        val query = DownloadManager.Query().setFilterById(downloadId)
-                        val cursor = downloadManager.query(query)
-                        if (cursor.moveToFirst()) {
-                            val statusColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                            if (statusColumnIndex != -1) {
-                                val status = cursor.getInt(statusColumnIndex)
-                                if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                                    downloading = false
-                                    isSuccessful = true
-                                } else if (status == DownloadManager.STATUS_FAILED) {
-                                    downloading = false
-                                }
-                            }
-                        } else {
-                            downloading = false
-                        }
-                        cursor.close()
-                        if (downloading) {
-                            Thread.sleep(1000)
-                        }
-                    }
-                    isSuccessful
+                val result = withContext(Dispatchers.IO) {
+                    downloadFileWithRedirects(modelDownloadUrl, tempFile)
                 }
 
-                if (success && tempStagingFile.exists()) {
-                    _modelState.value = ModelState.Loading
+                when (result) {
+                    is DownloadResult.Success -> {
+                        // Atomic swap of the temporary file to destination file
+                        if (tempFile.exists()) {
+                            if (destFile.exists()) destFile.delete()
+                            val renamed = tempFile.renameTo(destFile)
 
-                    withContext(Dispatchers.IO) {
-                        FileInputStream(tempStagingFile).use { input ->
-                            FileOutputStream(destFile).use { output ->
-                                input.copyTo(output)
+                            if (renamed && destFile.exists() && destFile.length() > 0) {
+                                _modelState.value = ModelState.Loading
+                                initializeModel()
+                            } else {
+                                _modelState.value = ModelState.Error("Failed to commit downloaded model file.")
                             }
+                        } else {
+                            _modelState.value = ModelState.Error("Downloaded temp file missing.")
                         }
-                        tempStagingFile.delete()
                     }
-
-                    if (destFile.exists() && destFile.length() > 50_000_000) {
-                        initializeModel()
-                    } else {
-                        _modelState.value = ModelState.Error("Downloaded file is empty or corrupted.")
+                    is DownloadResult.Error -> {
+                        if (tempFile.exists()) tempFile.delete()
+                        _modelState.value = ModelState.Error(result.message)
                     }
-                } else {
-                    _modelState.value = ModelState.Error("System DownloadManager failed to download the file.")
                 }
 
             } catch (e: Exception) {
                 e.printStackTrace()
-                _modelState.value = ModelState.Error("Download pipeline failed: ${e.message}")
+                _modelState.value = ModelState.Error("Download pipeline failed: ${e.localizedMessage}")
             }
         }
+    }
+
+    /**
+     * Downloads a file handling cross-protocol (HTTP -> HTTPS) redirects,
+     * validating content length to prevent broken/incomplete file writes.
+     */
+    private suspend fun downloadFileWithRedirects(
+        urlString: String,
+        targetFile: File,
+        maxRedirects: Int = 5
+    ): DownloadResult {
+        var currentUrl = urlString
+        var redirects = 0
+
+        while (redirects < maxRedirects) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL(currentUrl)
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "Android/FinanceApp")
+                    instanceFollowRedirects = false // Manual handling prevents protocol-drop issues
+                    connectTimeout = 30_000
+                    readTimeout = 30_000
+                }
+
+                val responseCode = connection.responseCode
+
+                // Handle Redirects manually (HTTP 301, 302, 303, 307, 308)
+                if (responseCode in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                        ?: return DownloadResult.Error("Redirected with no Location header.")
+
+                    currentUrl = if (location.startsWith("http")) location else URL(url, location).toString()
+                    redirects++
+                    continue
+                }
+
+                if (responseCode !in 200..299) {
+                    return DownloadResult.Error("Server returned HTTP response code: $responseCode")
+                }
+
+                val contentLength = connection.contentLengthLong
+                var bytesDownloaded = 0L
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(targetFile).use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            bytesDownloaded += bytesRead
+                        }
+                        output.flush()
+                    }
+                }
+
+                // Verify file isn't truncated
+                if (contentLength > 0 && bytesDownloaded != contentLength) {
+                    return DownloadResult.Error("Download incomplete: Expected $contentLength bytes, got $bytesDownloaded.")
+                }
+
+                return DownloadResult.Success
+
+            } catch (e: Exception) {
+                return DownloadResult.Error("Network error: ${e.localizedMessage}")
+            } finally {
+                connection?.disconnect()
+            }
+        }
+
+        return DownloadResult.Error("Too many redirects.")
     }
 
     fun addTransaction(
@@ -243,4 +276,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             _netWorth.value = balances.values.sum()
         }
     }
+}
+
+private sealed class DownloadResult {
+    object Success : DownloadResult()
+    data class Error(val message: String) : DownloadResult()
 }
