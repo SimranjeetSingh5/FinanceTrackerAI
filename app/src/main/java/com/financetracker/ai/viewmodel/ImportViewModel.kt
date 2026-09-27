@@ -2,8 +2,10 @@ package com.financetracker.ai.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.financetracker.ai.BuildConfig
 import com.financetracker.ai.FinanceApp
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.TransactionType
@@ -51,6 +53,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
     data class Edit(
         val amount: Double?,
         val dateMillis: Long?,
+        val merchant: String?,
         val categoryId: Long?,
         val include: Boolean
     )
@@ -76,17 +79,36 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     return@launch
                 }
-                val parsed = StatementParser.parse(text)
+                // Flag against what's already in the app so a re-imported statement shows its
+                // duplicates rather than silently skipping them.
+                val existing = StatementParser.existingKeysFor(repo.allTransactionsForExport())
+                val parsed = StatementParser.markDuplicates(StatementParser.parse(text), existing)
+                if (BuildConfig.DEBUG) {
+                    Log.d(LOG_TAG, "parse() returned ${parsed.size} rows from ${text.length} chars")
+                    parsed.take(20).forEach { row ->
+                        Log.d(
+                            LOG_TAG,
+                            "  row: date=${row.dateMillis != null} amt=${row.amount} " +
+                                    "merch='${row.merchant}' cat=${row.categoryName} " +
+                                    "review=${row.needsReview} raw='${row.rawText.take(90)}'"
+                        )
+                    }
+                }
                 if (parsed.isEmpty()) {
-                    _state.value = ImportState.Failed(
-                        "No transactions recognised in that statement. Each row needs at least a date."
-                    )
+                    _state.value = ImportState.Failed(diagnoseEmptyResult(text))
                     return@launch
                 }
-                // Pre-tick rows the parser is unsure about, so the user's first job is the
-                // small number of rows that actually need attention.
+                // Pre-tick rows the parser is confident about. Duplicates and rows it is unsure
+                // about stay unticked, so the user's first job is exactly the set of rows that
+                // need a decision rather than the whole statement.
                 _edits.value = parsed.associate { row ->
-                    row.fingerprint to Edit(row.amount, row.dateMillis, null, !row.needsReview)
+                    row.fingerprint to Edit(
+                        amount = row.amount,
+                        dateMillis = row.dateMillis,
+                        merchant = row.merchant,
+                        categoryId = null,
+                        include = !row.needsReview && !row.isDuplicate
+                    )
                 }
                 _state.value = ImportState.Ready(parsed)
             } catch (e: Exception) {
@@ -95,24 +117,93 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Explains *why* a statement produced nothing, since "0 rows" is unhelpful on its own.
+     *
+     * The most common cause is the wrong page: statements are often a multi-page PDF or
+     * screenshot set, and the user picks a fees-and-charges page rather than the activity
+     * page. Recognising that by its vocabulary is far more actionable than a parse failure.
+     */
+    private fun diagnoseEmptyResult(text: String): String {
+        val lower = text.lowercase()
+        val hasDates = text.lines().any { StatementParser.isDateLine(it) }
+
+        // Placeholder dates and stock-template watermarks mean this isn't a real statement —
+        // usually a sample downloaded from a bank's website rather than the user's own PDF.
+        val isTemplate = listOf(
+            "mm/dd/yyyy", "templatelab", "<branch name>", "lorem", "placeholder"
+        ).any { lower.contains(it) }
+
+        val feeWords = listOf(
+            "monthly fee", "per account", "per additional statement", "service charge",
+            "nsf charge", "check overdraft", "stop payment", "bank draft", "atm fee",
+            "wire transfer fee", "maintenance fee", "interest rate", "daily limit"
+        )
+        val feeHits = feeWords.count { lower.contains(it) }
+
+        return when {
+            isTemplate ->
+                "This looks like a sample or template statement — the dates read as " +
+                        "'mm/dd/yyyy' and the page carries template branding. Download the " +
+                        "PDF of your own account from your bank's website and import that."
+
+            !hasDates && feeHits >= 2 ->
+                "This looks like a fees-and-charges page, not your transactions. " +
+                        "Open the page that lists your recent activity — usually labelled " +
+                        "'Transaction activity', 'Account activity' or 'Recent transactions'."
+
+            !hasDates ->
+                "Couldn't find any dates on this page. Statements are usually several pages " +
+                        "long — pick the one listing your recent transactions."
+
+            else -> {
+                // Show the user what we actually saw. "Couldn't make sense of it" is useless
+                // on its own; the date-like lines usually make the problem obvious — a running
+                // balance mistaken for a row, or a date format the reader doesn't know.
+                val dateLike = text.lines()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() && StatementParser.isDateLine(it) }
+                    .take(4)
+                val sample = if (dateLike.isEmpty()) "" else
+                    "\n\nRecognised date lines:\n" + dateLike.joinToString("\n") { "• $it" }
+
+                "Found dates but couldn't make sense of the rows.$sample\n\n" +
+                        "Try a clearer photo, or paste the text instead."
+            }
+        }
+    }
+
+    /** Existing edit for a row, or a fresh one seeded from what the parser found. */
+    private fun editFor(row: ParsedTransaction, include: Boolean = true): Edit =
+        _edits.value[row.fingerprint]
+            ?: Edit(row.amount, row.dateMillis, row.merchant, null, include)
+
     fun setAmount(row: ParsedTransaction, amount: Double?) {
         _edits.value = _edits.value.toMutableMap().apply {
-            this[row.fingerprint] = (this[row.fingerprint] ?: Edit(row.amount, row.dateMillis, null, true))
-                .copy(amount = amount)
+            this[row.fingerprint] = editFor(row).copy(amount = amount)
+        }
+    }
+
+    /**
+     * Corrects the merchant name. OCR garbles these constantly ("STARBUKS", "Mukesh" from a
+     * payment reference), and the name is what the user will recognise later, so it's editable
+     * like any other field.
+     */
+    fun setMerchant(row: ParsedTransaction, merchant: String) {
+        _edits.value = _edits.value.toMutableMap().apply {
+            this[row.fingerprint] = editFor(row).copy(merchant = merchant)
         }
     }
 
     fun setCategory(row: ParsedTransaction, categoryId: Long?) {
         _edits.value = _edits.value.toMutableMap().apply {
-            this[row.fingerprint] = (this[row.fingerprint] ?: Edit(row.amount, row.dateMillis, null, true))
-                .copy(categoryId = categoryId)
+            this[row.fingerprint] = editFor(row).copy(categoryId = categoryId)
         }
     }
 
     fun setIncluded(row: ParsedTransaction, include: Boolean) {
         _edits.value = _edits.value.toMutableMap().apply {
-            this[row.fingerprint] = (this[row.fingerprint] ?: Edit(row.amount, row.dateMillis, null, true))
-                .copy(include = include)
+            this[row.fingerprint] = editFor(row).copy(include = include)
         }
     }
 
@@ -121,11 +212,10 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Ticks every row that can actually be written — those with both a date and an amount.
+     * Ticks every row that can actually be written and isn't a likely duplicate.
      *
-     * Rows missing either can't be saved, so ticking them would inflate the count and produce
-     * a silent no-op on import. They stay unticked so the user is left looking at exactly the
-     * rows that need a decision.
+     * Rows missing a date or amount can't be saved, and duplicates should be a deliberate
+     * choice — ticking either would inflate the count with rows that get skipped anyway.
      */
     fun selectAllImportable() {
         val ready = _state.value as? ImportState.Ready ?: return
@@ -133,7 +223,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             val row = ready.transactions.firstOrNull { it.fingerprint == print }
             val usable = (edit.amount ?: row?.amount) != null &&
                     (edit.dateMillis ?: row?.dateMillis) != null
-            edit.copy(include = usable)
+            edit.copy(include = usable && row?.isDuplicate != true)
         }
     }
 
@@ -154,9 +244,6 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
 
             val categoryList = categories.value
             val byName = categoryList.associateBy { it.name.lowercase() }
-            val existing = repo.allTransactionsForExport()
-            val existingPrints = existing.mapNotNull { fingerprintOf(it.timestamp, it.amount, it.note) }.toHashSet()
-
             var saved = 0
             var skipped = 0
 
@@ -167,18 +254,18 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                 val timestamp = edit.dateMillis
                 if (amount == null || timestamp == null) { skipped++; continue }
 
-                val print = fingerprintOf(timestamp, amount, row.merchant)
-                if (print != null && print in existingPrints) { skipped++; continue }
-
                 val category = edit.categoryId?.let { id -> categoryList.firstOrNull { it.id == id } }
                     ?: row.categoryName?.let { byName[it.lowercase()] }
                     ?: categoryList.firstOrNull { it.name == "Other" }
                     ?: return@launch
 
+                // Duplicates are the user's decision, not ours. They arrived unticked and, if
+                // ticked, are saved — re-importing a statement is a legitimate thing to want.
+                val merchant = edit.merchant?.takeIf { it.isNotBlank() } ?: row.merchant
                 repo.addTransaction(
                     amount = amount,
-                    note = row.merchant,
-                    merchant = row.merchant,
+                    note = merchant,
+                    merchant = merchant,
                     type = if (row.isIncome) TransactionType.INCOME else TransactionType.EXPENSE,
                     accountId = accountId,
                     manualCategoryId = category.id,
@@ -192,17 +279,12 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Same shape as the parser's fingerprint, so re-imports of the same statement collide. */
-    private fun fingerprintOf(timestamp: Long, amount: Double, merchant: String?): String? {
-        val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
-        val day = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}-${cal.get(Calendar.DAY_OF_MONTH)}"
-        val amt = String.format(java.util.Locale.US, "%.2f", amount)
-        val who = (merchant ?: "").lowercase().replace(Regex("[^a-z0-9]"), "").take(24)
-        return "$day|$amt|$who"
-    }
-
     override fun onCleared() {
         super.onCleared()
         scanner.close()
+    }
+
+    private companion object {
+        const val LOG_TAG = "StatementImport"
     }
 }

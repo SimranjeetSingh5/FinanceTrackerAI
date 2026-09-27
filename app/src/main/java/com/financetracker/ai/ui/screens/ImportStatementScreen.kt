@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -106,9 +107,8 @@ fun ImportStatementScreen(
                     edits = edits,
                     categories = categories.map { it.id to it.name },
                     currency = currency,
-                    onToggle = { row, on ->
-                        viewModel.setIncluded(row, on)
-                    },
+                    onToggle = { row, on -> viewModel.setIncluded(row, on) },
+                    onMerchant = viewModel::setMerchant,
                     onAmount = viewModel::setAmount,
                     onCategory = viewModel::setCategory,
                     onSelectAll = viewModel::includeAll
@@ -129,9 +129,11 @@ fun ImportStatementScreen(
     if (ready != null) {
         val included = ready.transactions.count { edits[it.fingerprint]?.include == true }
         val flagged = ready.transactions.count { it.needsReview && edits[it.fingerprint]?.include == true }
+        val duplicates = ready.transactions.count { it.isDuplicate }
         val account = accounts.firstOrNull()
         val complete = ready.transactions.count {
-            (edits[it.fingerprint]?.amount ?: it.amount) != null &&
+            !it.isDuplicate &&
+                    (edits[it.fingerprint]?.amount ?: it.amount) != null &&
                     (edits[it.fingerprint]?.dateMillis ?: it.dateMillis) != null
         }
 
@@ -141,6 +143,7 @@ fun ImportStatementScreen(
                     buildString {
                         append("$included of ${ready.transactions.size} selected")
                         if (flagged > 0) append(" · $flagged need a check")
+                        if (duplicates > 0) append(" · $duplicates possible duplicate")
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -265,6 +268,7 @@ private fun ReviewList(
     categories: List<Pair<Long, String>>,
     currency: java.text.NumberFormat,
     onToggle: (ParsedTransaction, Boolean) -> Unit,
+    onMerchant: (ParsedTransaction, String) -> Unit,
     onAmount: (ParsedTransaction, Double?) -> Unit,
     onCategory: (ParsedTransaction, Long?) -> Unit,
     onSelectAll: (Boolean) -> Unit
@@ -312,6 +316,7 @@ private fun ReviewList(
                 currency = currency,
                 dateFormat = dateFormat,
                 onToggle = { onToggle(row, it) },
+                onMerchant = { onMerchant(row, it) },
                 onAmount = { onAmount(row, it) },
                 onCategory = { onCategory(row, it) }
             )
@@ -327,12 +332,14 @@ private fun ReviewRow(
     currency: java.text.NumberFormat,
     dateFormat: SimpleDateFormat,
     onToggle: (Boolean) -> Unit,
+    onMerchant: (String) -> Unit,
     onAmount: (Double?) -> Unit,
     onCategory: (Long?) -> Unit
 ) {
     var expanded by remember { mutableStateOf(row.needsReview) }
     val included = edit?.include ?: !row.needsReview
     val amount = edit?.amount ?: row.amount
+    val merchant = edit?.merchant ?: row.merchant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -340,15 +347,44 @@ private fun ReviewRow(
             containerColor = when {
                 !included -> MaterialTheme.colorScheme.surfaceVariant
                 row.needsReview -> MaterialTheme.colorScheme.errorContainer
+                row.isDuplicate -> MaterialTheme.colorScheme.tertiaryContainer
                 else -> MaterialTheme.colorScheme.surface
             }
         )
     ) {
         Column(Modifier.padding(12.dp)) {
+            if (row.isDuplicate) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        when (row.duplicateOf) {
+                            ParsedTransaction.DuplicateReason.REPEATED_IN_FILE ->
+                                "Repeated on this statement"
+                            ParsedTransaction.DuplicateReason.ALREADY_IMPORTED ->
+                                "Already in your transactions"
+                            else -> "Possible duplicate"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = included, onCheckedChange = onToggle)
                 Column(Modifier.weight(1f)) {
-                    Text(row.merchant, fontWeight = FontWeight.Medium, maxLines = 1)
+                    Text(
+                        merchant.ifBlank { row.merchant },
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
                     Text(
                         buildString {
                             row.dateMillis?.let { append(dateFormat.format(Date(it))) }
@@ -375,12 +411,29 @@ private fun ReviewRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                TextButton(onClick = { expanded = !expanded }) {
-                    Text(if (expanded) "Hide details" else "Fix this row")
-                }
+            }
+
+            // Available on every row, not just flagged ones: a name OCR garbled but an
+            // otherwise complete row still needs correcting before it's saved.
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(
+                    when {
+                        expanded -> "Hide details"
+                        row.needsReview -> "Fix this row"
+                        else -> "Edit"
+                    }
+                )
             }
 
             if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = merchant,
+                    onValueChange = onMerchant,
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = amount?.toString().orEmpty(),

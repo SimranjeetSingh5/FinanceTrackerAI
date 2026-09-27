@@ -7,7 +7,10 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
+import com.financetracker.ai.BuildConfig
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
@@ -116,15 +119,89 @@ class StatementScanner(private val context: Context) {
     private suspend fun recognize(bitmap: Bitmap): String = suspendCancellableCoroutine { cont ->
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
-                cont.resume(result.text)
+                if (BuildConfig.DEBUG) {
+                    // A summary plus a short sample — enough to diagnose a bad parse without
+                    // flooding logcat with a whole page of recognised text.
+                    val lines = result.text.lines()
+                    Log.d(LOG_TAG, "recognized ${result.text.length} chars in ${lines.size} lines")
+                    lines.take(8).forEachIndexed { i, line -> Log.d(LOG_TAG, "[$i] $line") }
+                    Log.d(LOG_TAG, "reconstructed ${rowsFrom(result).size} rows")
+                }
+                // Photos of a table arrive one cell per line; joining cells back into rows is
+                // what makes an image behave like a text export for the parser.
+                cont.resume(rowsFrom(result).joinToString("\n"))
             }
             .addOnFailureListener { error ->
+                Log.e(LOG_TAG, "text recognition failed", error)
                 cont.resumeWithException(error)
             }
     }
 
+    /**
+     * Rebuilds table rows from recognised text.
+     *
+     * ML Kit returns one [Text.Line] per visual line, but on a photographed table each cell
+     * becomes its own line — a date in one, the merchant in another, the amount in a third. A
+     * parser that expects one row per line therefore finds a single date and nothing after it.
+     *
+     * Cells are grouped by vertical position: anything whose vertical centre falls within
+     * [ROW_TOLERANCE_RATIO] of a line's height belongs to the same row. Horizontal gaps are
+     * collapsed to a single space, which is all the parser needs.
+     */
+    private fun rowsFrom(result: Text): List<String> {
+        val cells = result.textBlocks
+            .flatMap { it.lines }
+            .mapNotNull { line ->
+                val box = line.boundingBox ?: return@mapNotNull null
+                val text = line.text.trim()
+                if (text.isEmpty()) return@mapNotNull null
+                Cell(
+                    text = text,
+                    top = box.top,
+                    bottom = box.bottom,
+                    left = box.left
+                )
+            }
+            .sortedWith(compareBy({ it.top }, { it.left }))
+
+        if (cells.isEmpty()) return emptyList()
+
+        // Group by vertical overlap, walking down the page in order.
+        val rows = mutableListOf<MutableList<Cell>>()
+        var current = mutableListOf(cells.first())
+        var rowHeight = (cells.first().bottom - cells.first().top).coerceAtLeast(1)
+
+        for (cell in cells.drop(1)) {
+            val anchor = current.first()
+            val height = (anchor.bottom - anchor.top).coerceAtLeast(1)
+            val tolerance = (height * ROW_TOLERANCE_RATIO).toInt()
+            val overlapsRow = cell.top <= anchor.bottom + tolerance &&
+                cell.bottom >= anchor.top - tolerance
+
+            if (overlapsRow) {
+                current.add(cell)
+                rowHeight = maxOf(rowHeight, cell.bottom - cell.top)
+            } else {
+                rows.add(current)
+                current = mutableListOf(cell)
+                rowHeight = (cell.bottom - cell.top).coerceAtLeast(1)
+            }
+        }
+        rows.add(current)
+
+        return rows
+            .map { row -> row.sortedBy { it.left }.joinToString(" ") { it.text } }
+            .filter { it.isNotBlank() }
+    }
+
+    private data class Cell(val text: String, val top: Int, val bottom: Int, val left: Int)
+
     private companion object {
+        const val LOG_TAG = "StatementScanner"
         const val MAX_IMAGE_EDGE = 2048
         const val MAX_PDF_PAGES = 10
+
+        /** How far a cell may sit outside a row's band and still belong to it. */
+        const val ROW_TOLERANCE_RATIO = 0.5f
     }
 }

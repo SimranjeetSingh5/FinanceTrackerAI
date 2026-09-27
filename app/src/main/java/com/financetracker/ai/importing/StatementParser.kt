@@ -1,5 +1,7 @@
 package com.financetracker.ai.importing
 
+import com.financetracker.ai.data.Transaction
+import com.financetracker.ai.util.Constants
 import java.util.Calendar
 import java.util.Locale
 
@@ -23,9 +25,13 @@ data class ParsedTransaction(
     val confidence: Confidence,
     val needsReview: Boolean,
     val fingerprint: String,
-    val isDuplicate: Boolean = false
+    val isDuplicate: Boolean = false,
+    val duplicateOf: DuplicateReason? = null
 ) {
     enum class Confidence { HIGH, MEDIUM, LOW }
+
+    /** Why a row was flagged as a duplicate, or null when it isn't one. */
+    enum class DuplicateReason { REPEATED_IN_FILE, ALREADY_IMPORTED }
 }
 
 /**
@@ -113,6 +119,9 @@ object StatementParser {
         }
     }
 
+    /** True when a line is shaped like a transaction date, whether or not it resolves. */
+    fun isDateLine(line: String): Boolean = DateReader.looksLikeDate(line)
+
     fun parse(rawText: String, now: Long = System.currentTimeMillis()): List<ParsedTransaction> {
         val lines = rawText.lines()
             .map { it.replace(' ', ' ').trim() }
@@ -170,7 +179,73 @@ object StatementParser {
             parseRecord(current, now)?.let(transactions::add)
         }
 
-        return transactions.sortedByDescending { it.dateMillis ?: 0L }
+        return markDuplicates(transactions.sortedByDescending { it.dateMillis ?: 0L })
+    }
+
+    /**
+     * Flags rows that repeat something already in the list.
+     *
+     * Two cases matter and they are different problems:
+     *  - **In-document**: the same transaction appears twice on the statement, usually because a
+     *    page was photographed twice or a running total was captured. Almost always a mistake.
+     *  - **In-app**: the transaction is already in the database, which is the normal case when
+     *    the same statement is imported twice. The user may still want it, so it is flagged
+     *    rather than removed.
+     *
+     * The merchant is compared fuzzily, because OCR rarely reads a name the same way twice
+     * ("STARBUCKS" vs "STARBUKS #4471"), and an exact match would miss most real duplicates.
+     */
+    fun markDuplicates(
+        transactions: List<ParsedTransaction>,
+        existing: Set<String> = emptySet()
+    ): List<ParsedTransaction> {
+        val seen = HashSet<String>()
+        return transactions.map { row ->
+            val key = duplicateKey(row.dateMillis, row.amount, row.merchant)
+            // A blank key means a field we couldn't read, so the row is unidentifiable rather
+            // than a duplicate — without this, every unreadable row would "match" the first.
+            val repeatInFile = key.isNotBlank() && !seen.add(key)
+            val alreadyImported = key.isNotBlank() && key in existing
+            if (key.isNotBlank()) seen.add(key)
+            row.copy(
+                isDuplicate = repeatInFile || alreadyImported,
+                duplicateOf = when {
+                    repeatInFile -> ParsedTransaction.DuplicateReason.REPEATED_IN_FILE
+                    alreadyImported -> ParsedTransaction.DuplicateReason.ALREADY_IMPORTED
+                    else -> null
+                }
+            )
+        }
+    }
+
+    /** Date + rounded amount only, for matching against existing app data. */
+    fun existingKeysFor(transactions: List<Transaction>): Set<String> =
+        transactions.mapNotNull { t ->
+            duplicateKey(t.timestamp, t.amount, t.note.ifBlank { t.merchant })
+        }.toHashSet()
+
+    /**
+     * A key loose enough to survive OCR noise but tight enough not to collide on genuinely
+     * different transactions: same day, same amount to the cent, and a similar merchant.
+     *
+     * The merchant is reduced to a *sorted* character set rather than a prefix, because OCR
+     * drops and duplicates letters mid-word — "STARBUCKS" and "STARBUKS" share no 8-character
+     * prefix, but they do share the same letters. Combined with an exact day and amount, this
+     * stays specific. Blank fields yield an empty key, which never matches: a row we couldn't
+     * read is unidentifiable, not a duplicate.
+     */
+    private fun duplicateKey(dateMillis: Long?, amount: Double?, merchant: String?): String {
+        if (dateMillis == null || amount == null) return ""
+        val cal = Calendar.getInstance().apply { timeInMillis = dateMillis }
+        val day = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}-${cal.get(Calendar.DAY_OF_MONTH)}"
+        val who = merchant.orEmpty().lowercase()
+            .filter { it.isLetterOrDigit() }
+        if (who.length < Constants.DUPLICATE_MIN_MERCHANT) return ""
+        val signature = who.take(Constants.DUPLICATE_MERCHANT_PREFIX)
+            .toCharArray()
+            .apply { sort() }
+            .concatToString()
+        return "$day|${String.format(Locale.US, "%.2f", amount)}|$signature"
     }
 
     private fun parseRecord(lines: List<String>, now: Long): ParsedTransaction? {
@@ -370,17 +445,9 @@ object StatementParser {
      */
     private fun looksLikeMangledAmount(line: String): Boolean {
         val trimmed = line.trim()
-        if (trimmed.isEmpty() || parseDateOrNull(trimmed) == null) return false
+        if (trimmed.isEmpty() || !DateReader.looksLikeDate(trimmed)) return false
         // Date-shaped but already rejected as a real header, and not a plain amount.
         return parseAmount(trimmed) == null
-    }
-
-    /** Wrapper so [looksLikeMangledAmount] can test date-shape without the rejection guard. */
-    private fun parseDateOrNull(line: String): Long? {
-        val lower = line.lowercase()
-        val monthNamed = Regex("^\\d{1,2}\\s*[a-z]{3,}").containsMatchIn(lower)
-        val numeric = Regex("^\\d{1,4}\\s*[/\\-.]\\s*\\d{1,4}").containsMatchIn(lower)
-        return if (monthNamed || numeric) System.currentTimeMillis() else null
     }
 
     /**

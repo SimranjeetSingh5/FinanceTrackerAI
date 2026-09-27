@@ -43,6 +43,19 @@ object Constants {
     /** Notification ids for recurring bill reminders, derived from the item id. */
     const val NOTIFICATION_ID_RECURRING_BASE = 2000
 
+    // ---- Duplicate detection --------------------------------------------------
+
+    /**
+     * How much of a merchant name participates in duplicate matching. OCR rarely reads a name
+     * identically twice ("STARBUCKS" vs "STARBUKS #4471"), so we compare a prefix rather than
+     * the whole string — long enough to avoid collapsing different merchants, short enough to
+     * survive recognition noise.
+     */
+    const val DUPLICATE_MERCHANT_PREFIX = 8
+
+    /** Merchant names shorter than this are too generic to match on. */
+    const val DUPLICATE_MIN_MERCHANT = 4
+
     // ---- Formatting -----------------------------------------------------------
 
     const val BYTES_PER_MB = 1_048_576L
