@@ -10,6 +10,7 @@ import androidx.core.app.NotificationManagerCompat
 object NotificationHelper {
     const val CHANNEL_BUDGET = "budget_alerts"
     const val CHANNEL_RECURRING = "recurring_reminders"
+    const val CHANNEL_DOWNLOAD = "model_download"
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -24,9 +25,15 @@ object NotificationHelper {
                 description = "Reminds you about upcoming recurring bills and subscriptions"
             }
         )
+        // LOW importance: this is a progress indicator, not something to interrupt for.
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_DOWNLOAD, "Model download", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Shows progress while the on-device AI model downloads"
+            }
+        )
     }
 
-    fun notifyBudgetAlert(context: Context, id: Int, categoryName: String, pctUsed: Int) {
+    fun notifyBudgetAlert(context: Context, categoryId: Long, categoryName: String, pctUsed: Int) {
         val notification = NotificationCompat.Builder(context, CHANNEL_BUDGET)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("Budget alert: $categoryName")
@@ -34,10 +41,11 @@ object NotificationHelper {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .build()
+        val id = Constants.NOTIFICATION_ID_BUDGET_BASE + categoryId.toInt()
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
-    fun notifyRecurringDue(context: Context, id: Int, name: String, amount: Double) {
+    fun notifyRecurringDue(context: Context, recurringId: Long, name: String, amount: Double) {
         val notification = NotificationCompat.Builder(context, CHANNEL_RECURRING)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("Upcoming bill: $name")
@@ -45,6 +53,7 @@ object NotificationHelper {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .build()
+        val id = Constants.NOTIFICATION_ID_RECURRING_BASE + recurringId.toInt()
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 }

@@ -12,13 +12,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.data.Goal
+import com.financetracker.ai.ui.components.ScreenHeader
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.GoalsViewModel
 import java.text.NumberFormat
 
 @Composable
-fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
+fun GoalsScreen(viewModel: GoalsViewModel = viewModel(), onBack: () -> Unit = {}) {
     val goals by viewModel.goals.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+    val currency = rememberCurrencyFormatter()
     var showAddDialog by remember { mutableStateOf(false) }
     var contributingGoal by remember { mutableStateOf<Goal?>(null) }
 
@@ -33,7 +35,7 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel()) {
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { Text("Savings goals", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+            item { ScreenHeader("Savings goals", onBack = onBack) }
 
             items(goals) { goal ->
                 Card(modifier = Modifier.fillMaxWidth()) {

@@ -116,7 +116,9 @@ class FinanceRepository(
     suspend fun archiveAccount(account: Account) = accountDao.update(account.copy(isArchived = true))
 
     suspend fun accountBalance(account: Account): Double =
-        account.startingBalance + (transactionDao.netForAccount(account.id) ?: 0.0)
+        account.startingBalance +
+            (transactionDao.netForAccount(account.id) ?: 0.0) +
+            (transactionDao.transfersIntoAccount(account.id) ?: 0.0)
 
     suspend fun netWorth(): Double {
         val accounts = accountDao.getAllOnce()

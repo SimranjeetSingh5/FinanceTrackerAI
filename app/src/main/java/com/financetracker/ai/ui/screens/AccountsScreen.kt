@@ -14,15 +14,17 @@ import androidx.compose.ui.unit.dp
 import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.AccountType
 import com.financetracker.ai.ui.components.iconForAccountType
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
+import com.financetracker.ai.ui.components.ScreenHeader
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import java.text.NumberFormat
 
 @Composable
-fun AccountsScreen(viewModel: FinanceViewModel) {
+fun AccountsScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
     val accounts by viewModel.accounts.collectAsState()
     val balances by viewModel.accountBalances.collectAsState()
     val netWorth by viewModel.netWorth.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+    val currency = rememberCurrencyFormatter()
     var showAddDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -36,6 +38,10 @@ fun AccountsScreen(viewModel: FinanceViewModel) {
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item {
+                ScreenHeader("Accounts", onBack = onBack)
+            }
+
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(20.dp)) {

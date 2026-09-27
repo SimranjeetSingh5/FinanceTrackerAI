@@ -20,6 +20,7 @@ data class MoreItem(val label: String, val subtitle: String, val icon: ImageVect
 @Composable
 fun MoreScreen(onNavigate: (String) -> Unit) {
     val items = listOf(
+        MoreItem("Transactions", "Search and manage your history", Icons.Filled.ReceiptLong, "transactions"),
         MoreItem("Accounts", "Balances and net worth", Icons.Filled.AccountBalanceWallet, "accounts"),
         MoreItem("Recurring & bills", "Subscriptions and scheduled payments", Icons.Filled.Autorenew, "recurring"),
         MoreItem("Savings goals", "Track progress toward targets", Icons.Filled.Flag, "goals"),

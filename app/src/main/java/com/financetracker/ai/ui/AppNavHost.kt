@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -19,6 +20,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.financetracker.ai.ui.components.LocalCurrencyCode
 import com.financetracker.ai.ui.screens.*
 import com.financetracker.ai.viewmodel.*
 
@@ -41,6 +43,9 @@ fun AppNavHost() {
     val analyticsViewModel: AnalyticsViewModel = viewModel()
     val settingsViewModel: SettingsViewModel = viewModel()
     val modelState by financeViewModel.modelState.collectAsState()
+
+    // Provided once so every screen formats money with the user's chosen currency.
+    val currencyCode by financeViewModel.currency.collectAsState()
 
     val bottomItems = listOf(Dest.Dashboard, Dest.Budgets, Dest.Add, Dest.Analytics, Dest.More)
 
@@ -72,26 +77,33 @@ fun AppNavHost() {
             }
         }
     ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = Dest.Dashboard.route,
-            modifier = Modifier.padding(padding)
-        ) {
-            composable(Dest.Dashboard.route) { DashboardScreen(financeViewModel) }
-            composable(Dest.Budgets.route) { BudgetsScreen(financeViewModel, budgetsViewModel) }
-            composable(Dest.Add.route) {
-                AddTransactionScreen(financeViewModel) { navController.navigate(Dest.Dashboard.route) }
-            }
-            composable(Dest.Analytics.route) { AnalyticsScreen(analyticsViewModel) }
-            composable(Dest.More.route) { MoreScreen(onNavigate = { route -> navController.navigate(route) }) }
+        CompositionLocalProvider(LocalCurrencyCode provides currencyCode) {
+            NavHost(
+                navController = navController,
+                startDestination = Dest.Dashboard.route,
+                modifier = Modifier.padding(padding)
+            ) {
+                composable(Dest.Dashboard.route) { DashboardScreen(financeViewModel) }
+                composable(Dest.Budgets.route) { BudgetsScreen(financeViewModel, budgetsViewModel) }
+                composable(Dest.Add.route) {
+                    AddTransactionScreen(financeViewModel) { navController.navigate(Dest.Dashboard.route) }
+                }
+                composable(Dest.Analytics.route) { AnalyticsScreen(analyticsViewModel) }
+                composable(Dest.More.route) { MoreScreen(onNavigate = { route -> navController.navigate(route) }) }
 
-            // Screens reached from the More hub
-            composable("accounts") { AccountsScreen(financeViewModel) }
-            composable("recurring") { RecurringScreen(financeViewModel, recurringViewModel) }
-            composable("goals") { GoalsScreen(goalsViewModel) }
-            composable("chat") { ChatScreen(chatViewModel) }
-            composable("setup") { ModelSetupScreen(financeViewModel) }
-            composable("settings") { SettingsScreen({navController.popBackStack()}, settingsViewModel) }
+                // Screens reached from the More hub
+                composable("transactions") {
+                    TransactionsScreen(onBack = { navController.popBackStack() })
+                }
+                composable("accounts") { AccountsScreen(financeViewModel, onBack = { navController.popBackStack() }) }
+                composable("recurring") {
+                    RecurringScreen(financeViewModel, recurringViewModel, onBack = { navController.popBackStack() })
+                }
+                composable("goals") { GoalsScreen(goalsViewModel, onBack = { navController.popBackStack() }) }
+                composable("chat") { ChatScreen(chatViewModel, onBack = { navController.popBackStack() }) }
+                composable("setup") { ModelSetupScreen(financeViewModel, onBack = { navController.popBackStack() }) }
+                composable("settings") { SettingsScreen({ navController.popBackStack() }, settingsViewModel) }
+            }
         }
     }
 }

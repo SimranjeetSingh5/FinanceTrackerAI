@@ -2,6 +2,7 @@ package com.financetracker.ai.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
@@ -11,20 +12,32 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.financetracker.ai.util.Constants
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import com.financetracker.ai.viewmodel.ModelState
 
 @Composable
-fun ModelSetupScreen(viewModel: FinanceViewModel) {
+fun ModelSetupScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
     val state by viewModel.modelState.collectAsState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
+    Box(Modifier.fillMaxSize()) {
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back"
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
         val iconColor = if (state is ModelState.Ready) {
             MaterialTheme.colorScheme.primary
         } else {
@@ -66,13 +79,36 @@ fun ModelSetupScreen(viewModel: FinanceViewModel) {
                 }
             }
             is ModelState.Downloading -> {
-                CircularProgressIndicator(modifier = Modifier.size(36.dp))
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "Downloading model payload from cloud storage...",
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center
-                )
+                val pct = (currentState.progress * 100).toInt().coerceIn(0, 100)
+                val resuming = currentState.resumedFrom > 0
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        progress = { currentState.progress },
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = when {
+                            resuming ->
+                                "Resuming download… $pct% (${Constants.formatSize(currentState.resumedFrom)} already saved)"
+                            currentState.progress > 0f ->
+                                "Downloading model… $pct%${currentState.source.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}"
+                            else ->
+                                "Downloading model payload${currentState.source.takeIf { it.isNotBlank() }?.let { " from $it" } ?: ""}..."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center
+                    )
+                    if (!resuming && currentState.progress <= 0f) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "About 800 MB — Wi-Fi recommended. You can pause and resume later.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
             is ModelState.Loading -> {
                 CircularProgressIndicator(modifier = Modifier.size(36.dp))
@@ -107,6 +143,15 @@ fun ModelSetupScreen(viewModel: FinanceViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
+                if (viewModel.hasPartialDownload()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Progress saved — retrying picks up where it left off.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = { viewModel.downloadAndInstallModel() },
@@ -115,6 +160,7 @@ fun ModelSetupScreen(viewModel: FinanceViewModel) {
                     Text("Retry Download Pipeline")
                 }
             }
+        }
         }
     }
 }

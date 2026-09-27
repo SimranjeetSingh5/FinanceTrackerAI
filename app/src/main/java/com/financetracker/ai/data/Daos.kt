@@ -42,10 +42,27 @@ interface TransactionDao {
     suspend fun totalIncome(start: Long, end: Long): Double?
 
     @Query("""
-        SELECT SUM(CASE WHEN type = 'INCOME' THEN amount WHEN type = 'EXPENSE' THEN -amount ELSE 0 END)
+        SELECT SUM(
+            CASE type
+                WHEN 'INCOME' THEN amount
+                WHEN 'EXPENSE' THEN -amount
+                WHEN 'TRANSFER' THEN -amount
+                ELSE 0
+            END
+        )
         FROM transactions WHERE accountId = :accountId
     """)
     suspend fun netForAccount(accountId: Long): Double?
+
+    /**
+     * A transfer leaves the source account via [netForAccount] and arrives here, so the same
+     * transaction is counted from both ends and balances across accounts stay conserved.
+     */
+    @Query("""
+        SELECT SUM(amount) FROM transactions
+        WHERE type = 'TRANSFER' AND transferToAccountId = :accountId
+    """)
+    suspend fun transfersIntoAccount(accountId: Long): Double?
 
     @Query("""
         SELECT categoryId, SUM(amount) as total FROM transactions

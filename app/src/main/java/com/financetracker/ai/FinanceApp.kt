@@ -11,6 +11,9 @@ import com.financetracker.ai.util.DailyMaintenanceWorker
 import com.financetracker.ai.util.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
@@ -22,6 +25,19 @@ class FinanceApp : Application() {
         private set
     lateinit var settingsStore: SettingsStore
         private set
+
+    /**
+     * Single source of truth for "is Gemma loaded". FinanceViewModel owns the transitions
+     * (download → load → ready/error); every other consumer — chat, dashboard, add-transaction —
+     * observes this instead of keeping its own copy of the state.
+     */
+    private val _modelReady = MutableStateFlow(false)
+    val modelReady: StateFlow<Boolean> = _modelReady.asStateFlow()
+
+    /** Writable so the owning ViewModel can publish readiness; read via [modelReady]. */
+    var isModelLoaded: Boolean
+        get() = _modelReady.value
+        set(value) { _modelReady.value = value }
 
     override fun onCreate() {
         super.onCreate()

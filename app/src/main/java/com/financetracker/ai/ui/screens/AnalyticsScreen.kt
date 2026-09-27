@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.ui.components.iconFor
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.AnalyticsViewModel
 import com.financetracker.ai.viewmodel.CategorySlice
 import com.financetracker.ai.viewmodel.MonthPoint
@@ -23,7 +24,7 @@ import java.text.NumberFormat
 fun AnalyticsScreen(viewModel: AnalyticsViewModel = viewModel()) {
     val breakdown by viewModel.breakdown.collectAsState()
     val trend by viewModel.trend.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+    val currency = rememberCurrencyFormatter()
     val total = breakdown.sumOf { it.amount }.takeIf { it > 0 } ?: 1.0
 
     LazyColumn(

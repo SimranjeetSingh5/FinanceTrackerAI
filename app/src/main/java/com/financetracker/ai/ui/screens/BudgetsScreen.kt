@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.ui.components.iconFor
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.BudgetsViewModel
 import com.financetracker.ai.viewmodel.CategoryBudgetProgress
 import com.financetracker.ai.viewmodel.FinanceViewModel
@@ -22,7 +23,7 @@ import java.text.NumberFormat
 fun BudgetsScreen(financeViewModel: FinanceViewModel, budgetsViewModel: BudgetsViewModel = viewModel()) {
     val progress by budgetsViewModel.progress.collectAsState()
     val allCategories by financeViewModel.categories.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+    val currency = rememberCurrencyFormatter()
     var editingCategory by remember { mutableStateOf<Category?>(null) }
 
     LazyColumn(

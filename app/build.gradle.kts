@@ -25,6 +25,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Required so ModelDownloader can gate its diagnostics behind BuildConfig.DEBUG.
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"

@@ -24,14 +24,14 @@ class DailyMaintenanceWorker(context: Context, params: WorkerParameters) : Corou
 
         if (settings.recurringRemindersEnabled) {
             repo.processDueRecurringTransactions { name, amount, id ->
-                NotificationHelper.notifyRecurringDue(applicationContext, id.toInt(), name, amount)
+                NotificationHelper.notifyRecurringDue(applicationContext, id, name, amount)
             }
         }
 
         if (settings.budgetAlertsEnabled) {
             val monthYear = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
             repo.checkBudgetAlerts(monthYear) { categoryName, pctUsed, categoryId ->
-                NotificationHelper.notifyBudgetAlert(applicationContext, categoryId.toInt(), categoryName, pctUsed)
+                NotificationHelper.notifyBudgetAlert(applicationContext, categoryId, categoryName, pctUsed)
             }
         }
 

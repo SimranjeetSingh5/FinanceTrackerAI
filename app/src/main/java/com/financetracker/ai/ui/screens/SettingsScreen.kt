@@ -2,16 +2,14 @@ package com.financetracker.ai.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.financetracker.ai.ui.components.ScreenHeader
 import com.financetracker.ai.viewmodel.SettingsViewModel
 
 @Composable
@@ -30,27 +28,7 @@ fun SettingsScreen(
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (onBackClick != null) {
-                    IconButton(
-                        onClick = onBackClick,
-                        modifier = Modifier.padding(end = 8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                }
-                Text(
-                    text = "Settings",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            ScreenHeader("Settings", onBack = onBackClick)
         }
         item { Spacer(Modifier.height(16.dp)) }
 

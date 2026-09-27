@@ -14,6 +14,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.data.RecurrenceFrequency
 import com.financetracker.ai.data.TransactionType
+import com.financetracker.ai.ui.components.ScreenHeader
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import com.financetracker.ai.viewmodel.RecurringViewModel
 import java.text.NumberFormat
@@ -21,11 +23,15 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun RecurringScreen(financeViewModel: FinanceViewModel, viewModel: RecurringViewModel = viewModel()) {
+fun RecurringScreen(
+    financeViewModel: FinanceViewModel,
+    viewModel: RecurringViewModel = viewModel(),
+    onBack: () -> Unit = {}
+) {
     val items by viewModel.items.collectAsState()
     val categories by financeViewModel.categories.collectAsState()
     val accounts by financeViewModel.accounts.collectAsState()
-    val currency = remember { NumberFormat.getCurrencyInstance() }
+    val currency = rememberCurrencyFormatter()
     val df = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
     var showAddDialog by remember { mutableStateOf(false) }
 
@@ -40,7 +46,7 @@ fun RecurringScreen(financeViewModel: FinanceViewModel, viewModel: RecurringView
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { Text("Bills & subscriptions", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+            item { ScreenHeader("Bills & subscriptions", onBack = onBack) }
 
             items(items) { item ->
                 Card(modifier = Modifier.fillMaxWidth()) {

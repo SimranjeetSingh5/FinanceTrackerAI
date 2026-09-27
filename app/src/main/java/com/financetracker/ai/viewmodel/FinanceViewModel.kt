@@ -1,13 +1,22 @@
 package com.financetracker.ai.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.financetracker.ai.FinanceApp
+import com.financetracker.ai.ai.ModelDownloader
 import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.Transaction
 import com.financetracker.ai.data.TransactionType
+import com.financetracker.ai.util.Constants
+import com.financetracker.ai.util.ModelDownloadWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,13 +24,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 sealed class ModelState {
     object NotDownloaded : ModelState()
-    object Downloading : ModelState()
+
+    /** [progress] is 0..1 when the size is known, else 0. [resumedFrom] is the prior byte count. */
+    data class Downloading(
+        val progress: Float = 0f,
+        val source: String = "",
+        val resumedFrom: Long = 0L
+    ) : ModelState()
+
     object Loading : ModelState()
     object Ready : ModelState()
     data class Error(val message: String) : ModelState()
@@ -36,11 +49,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     val currency: StateFlow<String> = settings.currencyCodeFlow
 
-    // IMPORTANT: This is Temporary link update this URL or hosts it permanently on Firebase.
-    private val modelDownloadUrl = "https://storage.to/Q61rIvpxi/download?expires=1785241528&signature=212dea9cd0f77976e3cbdc807214b2f9da448ab4d7c49c95a3f985fb94fac952"
-
     private val _modelState = MutableStateFlow<ModelState>(ModelState.NotDownloaded)
     val modelState: StateFlow<ModelState> = _modelState.asStateFlow()
+
+    /** True when Gemma is loaded and inference calls will actually return results. */
+    val isModelReady: StateFlow<Boolean> = app.modelReady
 
     private val _transactions = MutableStateFlow<List<Transaction>>(emptyList())
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
@@ -70,10 +83,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             repo.ensureDefaultCategories()
             repo.ensureDefaultAccount()
         }
-        viewModelScope.launch { repo.allTransactions.collect { _transactions.value = it; refreshTotals(); refreshAccountBalances() } }
+        viewModelScope.launch { repo.allTransactions.collect { _transactions.value = it; refreshTotals(); refreshAccountBalances(_accounts.value) } }
         viewModelScope.launch { repo.allCategories.collect { _categories.value = it } }
-        viewModelScope.launch { repo.allAccounts.collect { list -> _accounts.value = list; refreshAccountBalances() } }
+        viewModelScope.launch { repo.allAccounts.collect { list -> _accounts.value = list; refreshAccountBalances(list) } }
 
+        observeDownloadWork()
         checkAndInitializeModel()
     }
 
@@ -81,142 +95,135 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         if (gemma.isModelDownloaded()) {
             initializeModel()
         } else {
+            // A download may already be in flight from a previous session.
             _modelState.value = ModelState.NotDownloaded
         }
     }
 
+    /** Diagnostic log for the model download/load path. Filter: `adb logcat -s ModelDownload`. */
+    private fun log(message: String) = ModelDownloader.log(message)
+
     fun initializeModel() {
         viewModelScope.launch {
             _modelState.value = ModelState.Loading
+            app.isModelLoaded = false
+            log("initializeModel() starting; modelFile=${gemma.getLocalModelFile().absolutePath} " +
+                    "downloaded=${gemma.isModelDownloaded()}")
 
             val result = withContext(Dispatchers.IO) {
                 runCatching { gemma.initialize() }
             }
 
             result.onSuccess {
+                log("initializeModel() OK")
                 _modelState.value = ModelState.Ready
+                app.isModelLoaded = true
             }.onFailure {
+                log("initializeModel() FAILED: ${it.message}")
                 _modelState.value = ModelState.Error(it.message ?: "Failed to load Gemma engine runtime.")
+                app.isModelLoaded = false
             }
         }
     }
 
+    /** True when a previous download left a resumable partial file on disk. */
+    fun hasPartialDownload(): Boolean = ModelDownloader.partialBytes(partFile()) > 0
+
+    private fun partFile(): File {
+        val dest = gemma.getLocalModelFile()
+        return File(dest.parentFile, "${dest.name}.part")
+    }
+
+    /**
+     * True when the device has a validated internet connection. Note this is a *capability*
+     * check, not a reachability test — Android can report a validated network that still can't
+     * resolve a given host, so a real download can still fail after this returns true.
+     */
+    private suspend fun hasInternet(): Boolean = withContext(Dispatchers.IO) {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (cm == null) return@withContext false
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = cm.activeNetwork
+            val caps = network?.let { cm.getNetworkCapabilities(it) }
+            caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ?: false
+        } else {
+            @Suppress("DEPRECATION")
+            cm.activeNetworkInfo?.isConnected == true
+        }
+        log("NET check -> $result")
+        result
+    }
+
+    /**
+     * Hands the transfer to [ModelDownloadWorker] so it keeps running when the user leaves the
+     * app or the process is killed. Progress stays in the .part file, so a retry — whether the
+     * user taps again or WorkManager reschedules — resumes rather than starting over.
+     */
     fun downloadAndInstallModel() {
         viewModelScope.launch {
-            _modelState.value = ModelState.Downloading
-
-            try {
-                val destFile = gemma.getLocalModelFile()
-                val tempFile = File(destFile.parentFile, "${destFile.name}.tmp")
-
-                // Cleanup existing files before starting fresh
-                if (tempFile.exists()) tempFile.delete()
-                destFile.parentFile?.mkdirs()
-
-                val result = withContext(Dispatchers.IO) {
-                    downloadFileWithRedirects(modelDownloadUrl, tempFile)
-                }
-
-                when (result) {
-                    is DownloadResult.Success -> {
-                        // Atomic swap of the temporary file to destination file
-                        if (tempFile.exists()) {
-                            if (destFile.exists()) destFile.delete()
-                            val renamed = tempFile.renameTo(destFile)
-
-                            if (renamed && destFile.exists() && destFile.length() > 0) {
-                                _modelState.value = ModelState.Loading
-                                initializeModel()
-                            } else {
-                                _modelState.value = ModelState.Error("Failed to commit downloaded model file.")
-                            }
-                        } else {
-                            _modelState.value = ModelState.Error("Downloaded temp file missing.")
-                        }
-                    }
-                    is DownloadResult.Error -> {
-                        if (tempFile.exists()) tempFile.delete()
-                        _modelState.value = ModelState.Error(result.message)
-                    }
-                }
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _modelState.value = ModelState.Error("Download pipeline failed: ${e.localizedMessage}")
+            if (!hasInternet()) {
+                _modelState.value = ModelState.Error(
+                    "No internet connection. The model downloads once, then everything works offline — " +
+                            "connect to Wi-Fi or mobile data and try again."
+                )
+                return@launch
             }
+
+            val alreadyHave = ModelDownloader.partialBytes(partFile())
+            _modelState.value = ModelState.Downloading(0f, "Starting", alreadyHave)
+
+            log("enqueueing ModelDownloadWorker (resuming from $alreadyHave bytes)")
+            ModelDownloadWorker.enqueue(app)
         }
     }
 
     /**
-     * Downloads a file handling cross-protocol (HTTP -> HTTPS) redirects,
-     * validating content length to prevent broken/incomplete file writes.
+     * Mirrors the background worker's progress into [modelState] so the setup screen keeps
+     * updating even though the transfer now lives outside this ViewModel, and loads the model
+     * once the file lands.
      */
-    private suspend fun downloadFileWithRedirects(
-        urlString: String,
-        targetFile: File,
-        maxRedirects: Int = 5
-    ): DownloadResult {
-        var currentUrl = urlString
-        var redirects = 0
+    private fun observeDownloadWork() {
+        viewModelScope.launch {
+            WorkManager.getInstance(app)
+                .getWorkInfosForUniqueWorkFlow(Constants.WORK_NAME_DOWNLOAD)
+                .collect { infos ->
+                    val work = infos.firstOrNull() ?: return@collect
+                    log("work state=${work.state} progress=${work.progress.keyValueMap}")
+                    when (work.state) {
+                        WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                            if (_modelState.value is ModelState.Downloading) {
+                                _modelState.value = ModelState.NotDownloaded
+                            }
 
-        while (redirects < maxRedirects) {
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL(currentUrl)
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Android/FinanceApp")
-                    instanceFollowRedirects = false // Manual handling prevents protocol-drop issues
-                    connectTimeout = 30_000
-                    readTimeout = 30_000
-                }
-
-                val responseCode = connection.responseCode
-
-                // Handle Redirects manually (HTTP 301, 302, 303, 307, 308)
-                if (responseCode in 300..399) {
-                    val location = connection.getHeaderField("Location")
-                        ?: return DownloadResult.Error("Redirected with no Location header.")
-
-                    currentUrl = if (location.startsWith("http")) location else URL(url, location).toString()
-                    redirects++
-                    continue
-                }
-
-                if (responseCode !in 200..299) {
-                    return DownloadResult.Error("Server returned HTTP response code: $responseCode")
-                }
-
-                val contentLength = connection.contentLengthLong
-                var bytesDownloaded = 0L
-
-                connection.inputStream.use { input ->
-                    FileOutputStream(targetFile).use { output ->
-                        val buffer = ByteArray(8 * 1024)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            bytesDownloaded += bytesRead
+                        WorkInfo.State.RUNNING -> {
+                            val done = work.progress.getLong(Constants.PROGRESS_BYTES_DONE, 0L)
+                            val total = work.progress.getLong(Constants.PROGRESS_BYTES_TOTAL, -1L)
+                            _modelState.value = ModelState.Downloading(
+                                progress = if (total > 0) done.toFloat() / total else 0f,
+                                source = "Background"
+                            )
                         }
-                        output.flush()
+
+                        WorkInfo.State.SUCCEEDED -> {
+                            log("worker succeeded; loading model")
+                            if (gemma.isModelDownloaded()) initializeModel()
+                        }
+
+                        WorkInfo.State.FAILED -> {
+                            log("worker failed")
+                            _modelState.value = ModelState.Error(
+                                "Download failed. Any progress was kept — tap retry to continue."
+                            )
+                        }
+
+                        WorkInfo.State.CANCELLED -> {
+                            if (_modelState.value is ModelState.Downloading) {
+                                _modelState.value = ModelState.NotDownloaded
+                            }
+                        }
                     }
                 }
-
-                // Verify file isn't truncated
-                if (contentLength > 0 && bytesDownloaded != contentLength) {
-                    return DownloadResult.Error("Download incomplete: Expected $contentLength bytes, got $bytesDownloaded.")
-                }
-
-                return DownloadResult.Success
-
-            } catch (e: Exception) {
-                return DownloadResult.Error("Network error: ${e.localizedMessage}")
-            } finally {
-                connection?.disconnect()
-            }
         }
-
-        return DownloadResult.Error("Too many redirects.")
     }
 
     fun addTransaction(
@@ -272,16 +279,16 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun refreshAccountBalances() {
+    /**
+     * Recomputes every account balance from [accounts] rather than reading `_accounts.value`,
+     * so a transaction arriving before the account list has been emitted still balances
+     * against the correct account set.
+     */
+    private fun refreshAccountBalances(accounts: List<Account>) {
         viewModelScope.launch {
-            val balances = _accounts.value.associate { it.id to repo.accountBalance(it) }
+            val balances = accounts.associate { it.id to repo.accountBalance(it) }
             _accountBalances.value = balances
             _netWorth.value = balances.values.sum()
         }
     }
-}
-
-private sealed class DownloadResult {
-    object Success : DownloadResult()
-    data class Error(val message: String) : DownloadResult()
 }

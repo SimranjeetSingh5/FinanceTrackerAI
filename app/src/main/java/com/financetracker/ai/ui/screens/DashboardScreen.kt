@@ -12,10 +12,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.financetracker.ai.ui.components.iconFor
+import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.FinanceViewModel
 import com.financetracker.ai.viewmodel.ModelState
 import java.text.NumberFormat
-import java.util.Currency
 
 @Composable
 fun DashboardScreen(viewModel: FinanceViewModel) {
@@ -27,17 +27,7 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
     val modelState by viewModel.modelState.collectAsState()
     val netWorth by viewModel.netWorth.collectAsState()
 
-    val currencyCode by viewModel.currency.collectAsState()
-
-    val currencyFormatter = remember(currencyCode) {
-        NumberFormat.getCurrencyInstance().apply {
-            try {
-                currency = Currency.getInstance(currencyCode)
-            } catch (e: Exception) {
-                // Safe fallback if currencyCode is invalid
-            }
-        }
-    }
+    val currencyFormatter = rememberCurrencyFormatter()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),

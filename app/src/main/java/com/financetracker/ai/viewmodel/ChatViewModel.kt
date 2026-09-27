@@ -16,6 +16,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val repo = app.repository
     private val aiEngine = repo.aiEngineRef
 
+    /**
+     * The Gemma engine lives on the shared FinanceApp helper, and readiness is owned by
+     * FinanceViewModel. We mirror it here so the chat screen can disable its input rather
+     * than accepting a message that will never be answered.
+     */
+    val isModelReady: StateFlow<Boolean> = app.modelReady
+
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
@@ -33,6 +40,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(text: String) {
         if (text.isBlank() || _isGenerating.value) return
+        if (!isModelReady.value) return
         viewModelScope.launch {
             repo.saveChatMessage("user", text)
             _isGenerating.value = true
@@ -44,8 +52,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val latestTxs = repo.allTransactions.first()
             val latestCats = repo.allCategories.first()
 
-            aiEngine.chatStream(text, history, latestTxs, latestCats).collect { chunk ->
-                _streamingReply.value += chunk
+            // Guard the streaming loop: if generation throws, clear the spinner instead of
+            // leaving the screen stuck on "…".
+            runCatching {
+                aiEngine.chatStream(text, history, latestTxs, latestCats).collect { chunk ->
+                    _streamingReply.value += chunk
+                }
+            }.onFailure {
+                _streamingReply.value = "Couldn't reach the model: ${it.message}"
             }
 
             repo.saveChatMessage("assistant", _streamingReply.value)
