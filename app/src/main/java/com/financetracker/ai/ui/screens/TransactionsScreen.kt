@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,7 +49,8 @@ fun TransactionsScreen(
     viewModel: TransactionsViewModel = viewModel(),
     onBack: () -> Unit,
     isModelReady: Boolean = false,
-    onAsk: (String) -> Unit = {}
+    onAsk: (String) -> Unit = {},
+    onImportStatement: (() -> Unit)? = null
 ) {
     val transactions by viewModel.transactions.collectAsState()
     val categories by viewModel.categories.collectAsState()
@@ -98,6 +100,14 @@ fun TransactionsScreen(
                     }
                     if (isFiltered) {
                         TextButton(onClick = { query = ""; viewModel.clearFilters() }) { Text("Clear all") }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (onImportStatement != null) {
+                        TextButton(onClick = onImportStatement) {
+                            Icon(Icons.Filled.UploadFile, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Import")
+                        }
                     }
                 }
             }

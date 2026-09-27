@@ -3,8 +3,11 @@ package com.financetracker.ai.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -16,7 +19,11 @@ import com.financetracker.ai.viewmodel.ModelState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddTransactionScreen(viewModel: FinanceViewModel, onDone: () -> Unit) {
+fun AddTransactionScreen(
+    viewModel: FinanceViewModel,
+    onDone: () -> Unit,
+    onImportStatement: (() -> Unit)? = null
+) {
     val categories by viewModel.categories.collectAsState()
     val accounts by viewModel.accounts.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
@@ -34,7 +41,27 @@ fun AddTransactionScreen(viewModel: FinanceViewModel, onDone: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("Add transaction", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Add transaction",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.weight(1f)
+            )
+            if (onImportStatement != null) {
+                TextButton(onClick = onImportStatement) {
+                    Icon(
+                        Icons.Filled.UploadFile,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import")
+                }
+            }
+        }
 
         SingleChoiceSegmentedButtonRow {
             SegmentedButton(

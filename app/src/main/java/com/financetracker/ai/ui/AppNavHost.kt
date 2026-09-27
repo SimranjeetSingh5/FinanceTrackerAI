@@ -38,6 +38,7 @@ private sealed class Dest(val route: String, val label: String, val icon: androi
 /** More-hub routes, named so the "Ask AI" navigation can't drift from the graph. */
 const val CHAT_ROUTE = "chat"
 const val TRANSACTIONS_ROUTE = "transactions"
+const val IMPORT_ROUTE = "import_statement"
 
 @Composable
 fun AppNavHost() {
@@ -111,7 +112,11 @@ fun AppNavHost() {
                     )
                 }
                 composable(Dest.Add.route) {
-                    AddTransactionScreen(financeViewModel) { navController.navigate(Dest.Dashboard.route) }
+                    AddTransactionScreen(
+                        viewModel = financeViewModel,
+                        onDone = { navController.navigate(Dest.Dashboard.route) },
+                        onImportStatement = { navController.navigate(IMPORT_ROUTE) }
+                    )
                 }
                 composable(Dest.Analytics.route) {
                     AnalyticsScreen(analyticsViewModel, isModelReady = isModelReady, onAsk = openChatWith)
@@ -123,6 +128,13 @@ fun AppNavHost() {
                     TransactionsScreen(
                         isModelReady = isModelReady,
                         onAsk = openChatWith,
+                        onImportStatement = { navController.navigate(IMPORT_ROUTE) },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(IMPORT_ROUTE) {
+                    ImportStatementScreen(
+                        financeViewModel = financeViewModel,
                         onBack = { navController.popBackStack() }
                     )
                 }

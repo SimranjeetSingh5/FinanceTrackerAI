@@ -85,6 +85,13 @@ dependencies {
     // Encrypted local prefs for PIN/lock settings
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // ML Kit on-device text recognition — the BUNDLED model, not the Play Services variant.
+    // The bundled build ships the OCR weights in the APK, so statement scanning works offline
+    // with no API key and no Google account. The Play Services variant ("play-services-mlkit-
+    // text-recognition") would require network and silently upload nothing but still fail
+    // offline, which is the opposite of what this app promises.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+
     // DocumentFile for letting the user pick the downloaded .task model file
     implementation("androidx.documentfile:documentfile:1.0.1")
 
