@@ -5,12 +5,14 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.financetracker.ai.FinanceApp
 import com.financetracker.ai.ai.ModelDownloader
+import com.financetracker.ai.ai.SpendingFacts
 import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.Transaction
@@ -72,6 +74,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     private val _insight = MutableStateFlow<String?>(null)
     val insight: StateFlow<String?> = _insight.asStateFlow()
+
+    /** True while the on-device model is still writing the prose layer. */
+    private val _insightGenerating = MutableStateFlow(false)
+    val insightGenerating: StateFlow<Boolean> = _insightGenerating.asStateFlow()
 
     private val _monthlyIncome = MutableStateFlow(0.0)
     val monthlyIncome: StateFlow<Double> = _monthlyIncome.asStateFlow()
@@ -257,12 +263,36 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { repo.addAccount(account) }
     }
 
+    /**
+     * Two-stage insight: the arithmetic renders immediately from [SpendingFacts], then the
+     * on-device model appends a prose layer. The user gets real numbers in milliseconds instead
+     * of waiting on inference to describe numbers we already knew.
+     */
     fun generateMonthlyInsight() {
         viewModelScope.launch {
-            _insight.value = "Thinking..."
-            repo.getInsight("this month")
-                .onSuccess { _insight.value = it }
-                .onFailure { _insight.value = "Couldn't generate insight: ${it.message}" }
+            val periodLabel = "this month"
+            val t0 = SystemClock.elapsedRealtime()
+
+            val summary = withContext(Dispatchers.IO) { repo.spendingSummary(periodLabel) }
+            _insight.value = SpendingFacts.toPlainText(summary, periodLabel)
+            log("facts rendered in ${SystemClock.elapsedRealtime() - t0}ms")
+
+            if (_modelState.value !is ModelState.Ready) {
+                _insight.value = "${_insight.value}\n\nSet up the on-device model for a written summary."
+                return@launch
+            }
+
+            _insightGenerating.value = true
+            repo.getInsight(periodLabel)
+                .onSuccess {
+                    log("AI narration generated in ${SystemClock.elapsedRealtime() - t0}ms")
+                    _insight.value = "${_insight.value}\n\n$it"
+                }
+                .onFailure {
+                    log("narration failed after ${SystemClock.elapsedRealtime() - t0}ms: ${it.message}")
+                    // The numbers are already on screen, so a failed narration isn't fatal.
+                }
+            _insightGenerating.value = false
         }
     }
 

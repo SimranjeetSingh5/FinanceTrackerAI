@@ -12,13 +12,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.data.Goal
+import com.financetracker.ai.ui.components.AskAiSection
 import com.financetracker.ai.ui.components.ScreenHeader
 import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.GoalsViewModel
 import java.text.NumberFormat
 
 @Composable
-fun GoalsScreen(viewModel: GoalsViewModel = viewModel(), onBack: () -> Unit = {}) {
+fun GoalsScreen(
+    viewModel: GoalsViewModel = viewModel(),
+    onBack: () -> Unit = {},
+    isModelReady: Boolean = false,
+    onAsk: (String) -> Unit = {}
+) {
     val goals by viewModel.goals.collectAsState()
     val currency = rememberCurrencyFormatter()
     var showAddDialog by remember { mutableStateOf(false) }
@@ -56,6 +62,23 @@ fun GoalsScreen(viewModel: GoalsViewModel = viewModel(), onBack: () -> Unit = {}
             }
 
             if (goals.isEmpty()) item { Text("No savings goals yet — tap + to create one.") }
+
+            item {
+                val nearest = goals.filterNot { it.isCompleted }
+                    .minByOrNull { it.targetAmount - it.currentAmount }
+                AskAiSection(
+                    suggestions = buildList {
+                        nearest?.let {
+                            add("How do I reach my ${it.name} goal faster?")
+                        }
+                        add("How much should I save each month?")
+                        add("Am I on track to build an emergency fund?")
+                        add("Should I invest or pay off debt first?")
+                    },
+                    isModelReady = isModelReady,
+                    onAsk = onAsk
+                )
+            }
         }
     }
 

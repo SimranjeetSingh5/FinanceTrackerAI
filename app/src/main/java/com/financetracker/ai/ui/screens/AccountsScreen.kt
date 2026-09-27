@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.AccountType
+import com.financetracker.ai.ui.components.AskAiSection
 import com.financetracker.ai.ui.components.iconForAccountType
 import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.ui.components.ScreenHeader
@@ -20,7 +21,12 @@ import com.financetracker.ai.viewmodel.FinanceViewModel
 import java.text.NumberFormat
 
 @Composable
-fun AccountsScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
+fun AccountsScreen(
+    viewModel: FinanceViewModel,
+    onBack: () -> Unit = {},
+    isModelReady: Boolean = false,
+    onAsk: (String) -> Unit = {}
+) {
     val accounts by viewModel.accounts.collectAsState()
     val balances by viewModel.accountBalances.collectAsState()
     val netWorth by viewModel.netWorth.collectAsState()
@@ -84,6 +90,19 @@ fun AccountsScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
 
             if (accounts.isEmpty()) {
                 item { Text("No accounts yet — add one to get started.") }
+            }
+
+            item {
+                AskAiSection(
+                    suggestions = listOf(
+                        "How is my net worth trending?",
+                        "Where should I keep an emergency fund?",
+                        "Should I pay off my credit card first?",
+                        "How much should I save each month?"
+                    ),
+                    isModelReady = isModelReady,
+                    onAsk = onAsk
+                )
             }
         }
     }

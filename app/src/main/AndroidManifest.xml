@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- No general INTERNET requirement for AI inference — Gemma runs fully on-device. -->
     <!-- INTERNET is only used optionally if the user chooses to download the model file in-app. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Required so the model download can continue as a foreground service after the user
-         leaves the app; Android 14+ additionally requires the typed permission below. -->
+         leaves the app. Android 14+ additionally requires the DATA_SYNC type to be declared
+         both here and on the <service> element below. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -44,6 +46,20 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!--
+          WorkManager's own foreground service, which actually hosts the model download.
+          This is merged in from the work-runtime library, but Android 14+ (API 34) validates
+          the requested foregroundServiceType against this declaration, so the type must be
+          present here or startForeground() throws:
+            IllegalArgumentException: foregroundServiceType 0x1 is not a subset of
+            foregroundServiceType attribute 0x0 in service element of manifest file
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            tools:node="merge" />
 
     </application>
 

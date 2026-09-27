@@ -3,6 +3,7 @@ package com.financetracker.ai.ai
 import android.content.Context
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.Transaction
+import com.financetracker.ai.data.TransactionType
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -96,32 +97,43 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
     }
 
     /**
-     * Generates an isolated textual spending breakdown for the dashboard layer.
+     * Turns an already-computed [SpendingSummary] into prose.
+     *
+     * The numbers arrive pre-aggregated from [SpendingFacts], so the prompt is a few hundred
+     * characters and prefill is negligible — the cost is purely token generation. That also
+     * means the model can't invent or miscount a figure: it is only ever handed the values it
+     * is allowed to repeat.
      */
     suspend fun generateSpendingInsight(
-        transactions: List<Transaction>,
-        categories: List<Category>,
+        summary: SpendingSummary,
         periodLabel: String
     ): Result<String> {
-        if (transactions.isEmpty()) {
+        if (summary.transactionCount == 0) {
             return Result.success("No transaction history recorded for $periodLabel.")
         }
 
-        val categoryMap = categories.associateBy { it.id }
-        val df = threadLocalFormatter.get() ?: SimpleDateFormat("MMM d", Locale.getDefault())
-
-        val lines = transactions.take(20).joinToString("\n") { t ->
-            val catName = categoryMap[t.categoryId]?.name ?: "Uncategorized"
-            "${df.format(Date(t.timestamp))}|$catName|${t.type}|${t.amount}"
-        }
+        val facts = buildString {
+            append("Spending data for $periodLabel:\n")
+            append("- Total spending: ${round2(summary.spending)}\n")
+            append("- Total income: ${round2(summary.income)}\n")
+            summary.topCategory?.let {
+                append("- Biggest category: $it (${round2(summary.topCategoryAmount)}, ${summary.topCategorySharePct}%)\n")
+            }
+            summary.changeVsLastMonthPct?.let {
+                append("- Versus last month: ${if (it > 0) "+" else ""}$it%\n")
+            }
+            if (summary.overBudget.isNotEmpty()) {
+                append("- Over budget: ${summary.overBudget.joinToString(", ")}\n")
+            }
+        }.trim()
 
         val prompt = """
-            Transactions for $periodLabel (date|category|type|amount):
-            $lines
-            Write a warm 3-4 sentence summary: biggest spending category, any notable spike, one practical tip. Don't invent numbers.
-        """.trimIndent()
+            $facts
+            In 2-3 sentences: comment on the biggest category, anything notable, and give one
+            practical saving tip. Use only these figures. Plain prose, no lists or headings.
+        """.trimIndent().trim()
 
-        return gemma.generateResponse(prompt)
+        return gemma.generateResponse(prompt, temperature = 0.4f)
     }
 
     /**
@@ -156,6 +168,12 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
         """.trimIndent()
 
         return gemma.generateResponseStream(prompt)
+    }
+
+    /** Rounds to 2dp and trims a trailing ".0" so prompt numbers stay short. */
+    private fun round2(value: Double): String {
+        val rounded = Math.round(value * 100.0) / 100.0
+        return if (rounded % 1.0 == 0.0) rounded.toLong().toString() else rounded.toString()
     }
 
     /**

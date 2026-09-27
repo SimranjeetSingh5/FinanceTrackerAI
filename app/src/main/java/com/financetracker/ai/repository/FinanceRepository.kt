@@ -1,8 +1,11 @@
 package com.financetracker.ai.repository
 
 import com.financetracker.ai.ai.AiInsightEngine
+import com.financetracker.ai.ai.SpendingFacts
+import com.financetracker.ai.ai.SpendingSummary
 import com.financetracker.ai.data.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.util.*
 
 class FinanceRepository(
@@ -220,10 +223,38 @@ class FinanceRepository(
         return cal.timeInMillis
     }
 
-    suspend fun getInsight(periodLabel: String): Result<String> {
-        val txs = transactionDao.recent(60)
+    /**
+     * Deterministic spending analysis — arithmetic only, so it returns immediately and is always
+     * exactly correct. [periodLabel] is used only for presentation.
+     */
+    suspend fun spendingSummary(periodLabel: String): SpendingSummary {
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.DAY_OF_MONTH, 1)
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        val start = cal.timeInMillis
+        cal.add(Calendar.MONTH, 1)
+        val end = cal.timeInMillis - 1
+
+        val previousEnd = start - 1
+        cal.add(Calendar.MONTH, -1)
+        val previousStart = cal.timeInMillis
+
         val categories = categoryDao.getAllOnce()
-        return aiEngine.generateSpendingInsight(txs, categories, periodLabel)
+        val current = transactionDao.getBetween(start, end).first()
+        val previous = if (current.isNotEmpty()) {
+            transactionDao.getBetween(previousStart, previousEnd).first()
+        } else {
+            emptyList()
+        }
+        return SpendingFacts.summarize(current, categories, previous)
+    }
+
+    suspend fun getInsight(periodLabel: String): Result<String> {
+        val summary = spendingSummary(periodLabel)
+        return aiEngine.generateSpendingInsight(summary, periodLabel)
     }
 
     suspend fun saveChatMessage(role: String, content: String) {

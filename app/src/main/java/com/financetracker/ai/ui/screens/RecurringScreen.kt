@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.financetracker.ai.data.RecurrenceFrequency
 import com.financetracker.ai.data.TransactionType
+import com.financetracker.ai.ui.components.AskAiSection
 import com.financetracker.ai.ui.components.ScreenHeader
 import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.FinanceViewModel
@@ -26,7 +27,9 @@ import java.util.*
 fun RecurringScreen(
     financeViewModel: FinanceViewModel,
     viewModel: RecurringViewModel = viewModel(),
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    isModelReady: Boolean = false,
+    onAsk: (String) -> Unit = {}
 ) {
     val items by viewModel.items.collectAsState()
     val categories by financeViewModel.categories.collectAsState()
@@ -71,6 +74,23 @@ fun RecurringScreen(
             }
 
             if (items.isEmpty()) item { Text("No recurring bills yet. Add subscriptions, rent, or anything on a schedule.") }
+
+            item {
+                val monthly = items.filter { it.isActive && it.type == TransactionType.EXPENSE }
+                    .sumOf { it.amount }
+                AskAiSection(
+                    suggestions = buildList {
+                        if (monthly > 0) {
+                            add("My fixed costs are $monthly a month — is that too high?")
+                        }
+                        add("Which subscriptions should I cancel?")
+                        add("How can I reduce my recurring bills?")
+                        add("Am I saving enough after fixed costs?")
+                    },
+                    isModelReady = isModelReady,
+                    onAsk = onAsk
+                )
+            }
         }
     }
 

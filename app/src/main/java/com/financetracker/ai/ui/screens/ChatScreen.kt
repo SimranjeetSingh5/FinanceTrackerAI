@@ -14,14 +14,31 @@ import androidx.compose.ui.unit.dp
 import com.financetracker.ai.ui.components.ScreenHeader
 import com.financetracker.ai.viewmodel.ChatViewModel
 
+/**
+ * @param initialQuestion a question handed over from an "Ask AI" chip elsewhere in the app. It
+ *   seeds the input field rather than sending immediately, so the user can reword it before
+ *   paying for a slow on-device generation.
+ */
 @Composable
-fun ChatScreen(viewModel: ChatViewModel, onBack: () -> Unit = {}) {
+fun ChatScreen(
+    viewModel: ChatViewModel,
+    onBack: () -> Unit = {},
+    initialQuestion: String? = null,
+    onInitialQuestionConsumed: () -> Unit = {}
+) {
     val messages by viewModel.messages.collectAsState()
     val streaming by viewModel.streamingReply.collectAsState()
     val isGenerating by viewModel.isGenerating.collectAsState()
     val modelReady by viewModel.isModelReady.collectAsState()
     var input by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
+
+    LaunchedEffect(initialQuestion) {
+        if (!initialQuestion.isNullOrBlank()) {
+            input = initialQuestion
+            onInitialQuestionConsumed()
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

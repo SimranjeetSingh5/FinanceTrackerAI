@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.financetracker.ai.ui.components.AskAiSection
 import com.financetracker.ai.ui.components.iconFor
 import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.viewmodel.AnalyticsViewModel
@@ -21,7 +22,11 @@ import com.financetracker.ai.viewmodel.MonthPoint
 import java.text.NumberFormat
 
 @Composable
-fun AnalyticsScreen(viewModel: AnalyticsViewModel = viewModel()) {
+fun AnalyticsScreen(
+    viewModel: AnalyticsViewModel = viewModel(),
+    isModelReady: Boolean = false,
+    onAsk: (String) -> Unit = {}
+) {
     val breakdown by viewModel.breakdown.collectAsState()
     val trend by viewModel.trend.collectAsState()
     val currency = rememberCurrencyFormatter()
@@ -50,6 +55,20 @@ fun AnalyticsScreen(viewModel: AnalyticsViewModel = viewModel()) {
         }
 
         if (breakdown.isEmpty()) item { Text("No expenses recorded this month yet.") }
+
+        item {
+            val top = breakdown.firstOrNull()?.category?.name
+            AskAiSection(
+                suggestions = buildList {
+                    top?.let { add("Why is $it my biggest expense?") }
+                    add("Is my spending going up or down?")
+                    add("How does this month compare to last month?")
+                    add("What should I change to save more?")
+                },
+                isModelReady = isModelReady,
+                onAsk = onAsk
+            )
+        }
     }
 }
 

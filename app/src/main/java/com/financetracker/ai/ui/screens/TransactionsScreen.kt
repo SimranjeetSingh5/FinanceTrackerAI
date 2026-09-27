@@ -33,6 +33,7 @@ import com.financetracker.ai.data.Account
 import com.financetracker.ai.data.Category
 import com.financetracker.ai.data.Transaction
 import com.financetracker.ai.data.TransactionType
+import com.financetracker.ai.ui.components.AskAiSection
 import com.financetracker.ai.ui.components.iconFor
 import com.financetracker.ai.ui.components.rememberCurrencyFormatter
 import com.financetracker.ai.ui.components.ScreenHeader
@@ -45,7 +46,9 @@ import java.util.*
 @Composable
 fun TransactionsScreen(
     viewModel: TransactionsViewModel = viewModel(),
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    isModelReady: Boolean = false,
+    onAsk: (String) -> Unit = {}
 ) {
     val transactions by viewModel.transactions.collectAsState()
     val categories by viewModel.categories.collectAsState()
@@ -124,7 +127,7 @@ fun TransactionsScreen(
                     )
                 }
             } else {
-                LazyColumn {
+                LazyColumn(Modifier.weight(1f)) {
                     items(transactions, key = { it.id }) { tx ->
                         val category = categories.firstOrNull { it.id == tx.categoryId }
                         val account = accounts.firstOrNull { it.id == tx.accountId }
@@ -145,6 +148,20 @@ fun TransactionsScreen(
                     }
                 }
             }
+
+            // Sits below the list rather than inside it, so it doesn't scroll away with the
+            // rows and stays reachable however long the history is.
+            AskAiSection(
+                suggestions = listOf(
+                    "What is this month's biggest expense?",
+                    "Is there unusual spending here?",
+                    "Can I afford this purchase?",
+                    "How much do I spend on subscriptions?"
+                ),
+                isModelReady = isModelReady,
+                onAsk = onAsk,
+                modifier = Modifier.padding(16.dp)
+            )
         }
     }
 
