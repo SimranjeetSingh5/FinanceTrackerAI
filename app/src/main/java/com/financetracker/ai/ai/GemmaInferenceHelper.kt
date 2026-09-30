@@ -2,6 +2,7 @@ package com.financetracker.ai.ai
 
 import android.content.Context
 import android.os.SystemClock
+import com.financetracker.ai.BuildConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
@@ -11,7 +12,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -44,7 +48,7 @@ class GemmaInferenceHelper(private val context: Context) {
      * actually returns is the one we keep. Without this, a device with a broken-but-loadable
      * GPU would fail on every inference instead of silently degrading to CPU.
      */
-    fun initialize(maxTokens: Int = DEFAULT_MAX_TOKENS): Result<Unit> {
+    suspend fun initialize(maxTokens: Int = DEFAULT_MAX_TOKENS): Result<Unit> {
         if (inferenceEngine.get() != null) {
             return Result.success(Unit)
         }
@@ -81,33 +85,78 @@ class GemmaInferenceHelper(private val context: Context) {
             )
         }
 
-        android.util.Log.e(LOG_TAG, "no working backend; falling back to CPU-only answers")
+        android.util.Log.e(LOG_TAG, "no working backend")
         return Result.failure(
-            lastError ?: IllegalStateException("Could not initialise the inference engine.")
+            ModelUnsupportedException(
+                "This model file loaded but produced no output for even a trivial prompt, so it " +
+                        "can't answer questions. That usually means it is a base (pre-trained) " +
+                        "build rather than an instruction-tuned one. Replace the .task file with " +
+                        "an instruction-tuned Gemma build (a .task with '-it' or 'instruction' in " +
+                        "its name) and the AI features will work.",
+                lastError
+            )
         )
     }
 
-    private fun tryBackend(choice: BackendChoice, maxTokens: Int): Result<Unit> = try {
+    /**
+     * The engine initialised but cannot generate. Distinguished from other failures because the
+     * remedy is a different model file, not a code change.
+     */
+    class ModelUnsupportedException(message: String, cause: Throwable? = null) :
+        Exception(message, cause)
+
+    private suspend fun tryBackend(choice: BackendChoice, maxTokens: Int): Result<Unit> = try {
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(getLocalModelFile().absolutePath)
             .setMaxTokens(maxTokens)
             .setPreferredBackend(choice.backend)
             .build()
 
+        val t0 = SystemClock.elapsedRealtime()
         val engine = LlmInference.createFromOptions(context, options)
+        android.util.Log.d(LOG_TAG, "${choice.name}: engine created in ${SystemClock.elapsedRealtime() - t0}ms")
 
         // Smoke test: a backend that loads but can't generate is useless, and this is the only
-        // point where we find out cheaply.
+        // point where we find out cheaply. It runs on a worker thread with a hard timeout —
+        // a backend that never returns would otherwise hang initialisation forever and leave
+        // the UI spinning with no way to recover.
+        //
+        // The probe uses a real chat turn and default sampling on purpose. An earlier version
+        // set topK=1, which pinned the model to a single candidate token and made the result a
+        // constant regardless of the prompt — it "passed" for every prompt while proving
+        // nothing. The actual chat path is exercised here so a mismatch shows up as a
+        // failed init rather than as silent empty answers later.
         val probe = LlmInferenceSession.createFromOptions(
             engine,
             LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                .setTemperature(0f)
-                .setTopK(1)
+                .setTemperature(0.7f)
+                .setTopK(40)
                 .build()
         )
         try {
-            probe.addQueryChunk("Hi")
-            probe.generateResponseAsync().get()
+            probe.addQueryChunk(
+                GemmaChat.buildPrompt(
+                    systemInstruction = "",
+                    userMessage = "Reply with the single word: ready"
+                )
+            )
+            val tProbe = SystemClock.elapsedRealtime()
+            val response = withTimeout(SMOKE_TEST_TIMEOUT_MS) {
+                withContext(Dispatchers.IO) {
+                    probe.generateResponseAsync().get(PROBE_WAIT_MS, TimeUnit.MILLISECONDS)
+                }
+            }
+            val cleaned = cleanResponse(response)
+            android.util.Log.d(
+                LOG_TAG,
+                "${choice.name}: smoke test in ${SystemClock.elapsedRealtime() - tProbe}ms, " +
+                        "${cleaned.length} chars -> \"${cleaned.take(80)}\""
+            )
+            // A backend can load, return a string, and still be useless if that string is
+            // empty. That was silently passing as "healthy" before.
+            if (cleaned.isBlank()) {
+                throw IllegalStateException("Backend produced an empty response")
+            }
         } finally {
             try { probe.close() } catch (_: Exception) {}
         }
@@ -115,6 +164,7 @@ class GemmaInferenceHelper(private val context: Context) {
         inferenceEngine.set(engine)
         Result.success(Unit)
     } catch (e: Exception) {
+        android.util.Log.w(LOG_TAG, "${choice.name} failed: ${e::class.java.simpleName}: ${e.message}")
         Result.failure(e)
     }
 
@@ -144,51 +194,69 @@ class GemmaInferenceHelper(private val context: Context) {
             .build()
     }
 
+    /**
+     * The engine, initialising it if needed.
+     *
+     * Kept separate so every entry point shares the same lazy path, and so a failed
+     * initialisation surfaces as a Result rather than an exception mid-render.
+     */
+    private suspend fun engine(): Result<LlmInference> {
+        inferenceEngine.get()?.let { return Result.success(it) }
+
+        val init = initialize()
+        if (init.isFailure) {
+            return Result.failure(
+                init.exceptionOrNull() ?: IllegalStateException("Engine not initialised.")
+            )
+        }
+        return inferenceEngine.get()?.let { Result.success(it) }
+            ?: Result.failure(IllegalStateException("Engine not initialised."))
+    }
+
+    /**
+     * Strips a trailing turn marker the model may have emitted.
+     *
+     * MediaPipe occasionally includes the closing token in the returned text, which then shows
+     * up verbatim in the UI as a stray `<end_of_turn>`.
+     */
+    private fun cleanResponse(text: String): String =
+        text.replace(GemmaChat.END, "").replace(GemmaChat.START, "").trim()
+
     suspend fun generateResponse(
         prompt: String,
         temperature: Float = 0.2f,
         topK: Int = 40
     ): Result<String> = withContext(Dispatchers.IO) {
-        val engine = inferenceEngine.get() ?: run {
-            val initResult = initialize()
-            if (initResult.isFailure) {
-                return@withContext Result.failure(
-                    initResult.exceptionOrNull() ?: IllegalStateException("Engine not initialized.")
+        engine().mapCatching { eng ->
+            var session: LlmInferenceSession? = null
+            try {
+                val t0 = SystemClock.elapsedRealtime()
+                session = LlmInferenceSession.createFromOptions(
+                    eng, createSessionOptions(temperature, topK)
                 )
+                val tSession = SystemClock.elapsedRealtime()
+
+                session.addQueryChunk(prompt)
+                val tPrefill = SystemClock.elapsedRealtime()
+                val raw = session.generateResponseAsync().get(GENERATE_WAIT_MS, TimeUnit.MILLISECONDS)
+                val response = cleanResponse(raw)
+                val tDone = SystemClock.elapsedRealtime()
+
+                android.util.Log.d(
+                    LOG_TAG,
+                    "generateResponse: total=${tDone - t0}ms (setup=${tSession - t0}ms, " +
+                            "generate=${tDone - tPrefill}ms) out=${response.length} chars"
+                )
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.d(LOG_TAG, "PROMPT >>>\n$prompt\n<<< END PROMPT")
+                    android.util.Log.d(LOG_TAG, "OUTPUT >>>\n$response\n<<< END OUTPUT")
+                }
+                response
+            } finally {
+                try { session?.close() } catch (_: Exception) {}
             }
-            inferenceEngine.get()
-                ?: return@withContext Result.failure(IllegalStateException("Engine not initialized."))
-        }
-
-        var session: LlmInferenceSession? = null
-        try {
-            val t0 = SystemClock.elapsedRealtime()
-            val sessionOptions = createSessionOptions(temperature, topK)
-            session = LlmInferenceSession.createFromOptions(engine, sessionOptions)
-            val tSession = SystemClock.elapsedRealtime()
-            android.util.Log.d(
-                LOG_TAG,
-                "generateResponse: session created in ${tSession - t0}ms, " +
-                        "promptChars=${prompt.length}"
-            )
-
-            session.addQueryChunk(prompt)
-            val tPrefill = SystemClock.elapsedRealtime()
-            val response = session.generateResponseAsync().get()
-            val tDone = SystemClock.elapsedRealtime()
-
-            android.util.Log.d(
-                LOG_TAG,
-                "generateResponse: total=${tDone - t0}ms " +
-                        "(setup=${tSession - t0}ms, generate=${tDone - tPrefill}ms) " +
-                        "outputChars=${response.length}"
-            )
-            Result.success(response)
-        } catch (e: Exception) {
-            android.util.Log.e(LOG_TAG, "generateResponse failed: ${e.message}", e)
-            Result.failure(e)
-        } finally {
-            try { session?.close() } catch (_: Exception) {}
+        }.onFailure {
+            android.util.Log.e(LOG_TAG, "generateResponse failed: ${it.message}", it)
         }
     }
 
@@ -217,21 +285,45 @@ class GemmaInferenceHelper(private val context: Context) {
 
             session.addQueryChunk(prompt)
             val tPrefill = SystemClock.elapsedRealtime()
+            if (BuildConfig.DEBUG) {
+                // Log the whole prompt: turn markers are what has been wrong twice now, and
+                // seeing them is the only way to verify the structure is balanced.
+                android.util.Log.d(LOG_TAG, "stream: PROMPT >>>\n$prompt\n<<< END PROMPT")
+            }
             android.util.Log.d(
                 LOG_TAG,
                 "stream: submitted promptChars=${prompt.length} in ${tPrefill - t0}ms"
             )
 
+            // MediaPipe's ProgressListener<String> delivers the FULL accumulated response on
+            // every callback, not an incremental delta. Callers therefore replace their buffer
+            // with each value rather than appending — appending would re-concatenate the whole
+            // response on every token and produce runaway duplicated text.
+            var emitted = false
             val progressListener = ProgressListener<String> { partialResult, isComplete ->
-                if (!partialResult.isNullOrEmpty()) {
-                    trySend(partialResult)
+                val cleaned = cleanResponse(partialResult.orEmpty())
+                if (cleaned.isNotEmpty()) {
+                    emitted = true
+                    trySend(cleaned)
                 }
                 if (isComplete) {
                     android.util.Log.d(
                         LOG_TAG,
-                        "stream: complete in ${SystemClock.elapsedRealtime() - t0}ms"
+                        "stream: complete in ${SystemClock.elapsedRealtime() - t0}ms " +
+                                "(emitted=$emitted, chars=${cleaned.length})"
                     )
-                    close()
+                    if (BuildConfig.DEBUG) {
+                        android.util.Log.d(LOG_TAG, "stream: OUTPUT >>>\n$cleaned\n<<< END OUTPUT")
+                    }
+                    // A model that terminated without producing anything is a real failure
+                    // mode, and silently closing the flow leaves the caller with an empty
+                    // reply and no explanation. Surface it instead.
+                    if (!emitted) {
+                        android.util.Log.w(LOG_TAG, "stream produced no output")
+                        close(IllegalStateException("The model returned no response."))
+                    } else {
+                        close()
+                    }
                 }
             }
 
@@ -271,5 +363,21 @@ class GemmaInferenceHelper(private val context: Context) {
          * never use.
          */
         const val DEFAULT_MAX_TOKENS = 2048
+
+        /**
+         * How long a backend's smoke test may take before we treat it as unusable. A backend
+         * that loads but never generates is a real failure mode, and without a bound here the
+         * app sits on "initialising" indefinitely.
+         */
+        const val SMOKE_TEST_TIMEOUT_MS = 90_000L
+
+        /** Shorter wait on the blocking call itself, so a wedged backend fails fast. */
+        const val PROBE_WAIT_MS = 60_000L
+
+        /**
+         * Bound on a real generation. Generous, because on a slow emulator a few sentences can
+         * take tens of seconds — but bounded, so a wedged session can't hang the UI forever.
+         */
+        const val GENERATE_WAIT_MS = 180_000L
     }
 }

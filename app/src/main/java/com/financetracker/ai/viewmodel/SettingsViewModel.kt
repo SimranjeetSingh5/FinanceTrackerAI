@@ -20,6 +20,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val biometricEnabled: StateFlow<Boolean> = settings.isBiometricEnabledFlow
     val budgetAlertsEnabled: StateFlow<Boolean> = settings.budgetAlertsEnabledFlow
     val recurringRemindersEnabled: StateFlow<Boolean> = settings.recurringRemindersEnabledFlow
+    val watchlist: StateFlow<List<String>> = settings.watchlistFlow
 
     fun setCurrency(code: String) {
         settings.currencyCode = code
@@ -43,6 +44,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setRecurringRemindersEnabled(enabled: Boolean) {
         settings.recurringRemindersEnabled = enabled
+    }
+
+    fun setWatchlist(symbols: List<String>) {
+        settings.setWatchlist(symbols)
     }
 
     fun buildExportIntent(onReady: (Intent) -> Unit) {

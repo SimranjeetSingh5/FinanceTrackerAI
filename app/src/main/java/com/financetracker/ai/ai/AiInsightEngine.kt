@@ -39,11 +39,17 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
         }
 
         val categoryNames = categories.joinToString(", ") { it.name }
-        val prompt = """
-            Categorize this transaction into exactly one category: $categoryNames
-            Merchant: ${merchant ?: note} | Note: $note | Amount: $amount
-            JSON only: {"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<short>"}
-        """.trimIndent()
+        val prompt = GemmaChat.buildPrompt(
+            systemInstruction = GemmaChat.SYSTEM_FINANCE,
+            history = emptyList(),
+            userMessage = """
+                Categorize this transaction into exactly one of these categories: $categoryNames
+
+                Merchant: ${merchant ?: note} | Note: $note | Amount: $amount
+
+                Reply with JSON only, no other text: {"category": "<name>", "confidence": <0.0-1.0>}
+            """.trimIndent()
+        )
 
         return gemma.generateResponse(prompt).mapCatching { raw ->
             val json = JSONObject(extractJson(raw))
@@ -75,13 +81,19 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
             "$i: merchant=${merchant ?: note}, note=$note, amount=$amount"
         }.joinToString("\n")
 
-        val prompt = """
-            Categorize each transaction below into exactly one category: $categoryNames
-            Transactions:
-            $txList
-            JSON array only, one object per transaction in order:
-            [{"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<short>"}, ...]
-        """.trimIndent()
+        val prompt = GemmaChat.buildPrompt(
+            systemInstruction = GemmaChat.SYSTEM_FINANCE,
+            history = emptyList(),
+            userMessage = """
+                Categorize each transaction below into exactly one category: $categoryNames
+
+                Transactions:
+                $txList
+
+                Reply with a JSON array only, one object per transaction in order:
+                [{"category": "<name>", "confidence": <0.0-1.0>}, ...]
+            """.trimIndent()
+        )
 
         return gemma.generateResponse(prompt).mapCatching { raw ->
             val arr = JSONArray(extractJsonArray(raw))
@@ -127,11 +139,13 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
             }
         }.trim()
 
-        val prompt = """
-            $facts
-            In 2-3 sentences: comment on the biggest category, anything notable, and give one
-            practical saving tip. Use only these figures. Plain prose, no lists or headings.
-        """.trimIndent().trim()
+        val prompt = GemmaChat.buildPrompt(
+            systemInstruction = GemmaChat.SYSTEM_FINANCE,
+            history = emptyList(),
+            userMessage = "$facts\n\nIn 2-3 sentences: comment on the biggest category, " +
+                "anything notable, and give one practical saving tip. Use only these figures. " +
+                "Plain prose, no lists or headings."
+        )
 
         return gemma.generateResponse(prompt, temperature = 0.4f)
     }
@@ -152,20 +166,14 @@ class AiInsightEngine(private val gemma: GemmaInferenceHelper) {
             val catName = categoryMap[t.categoryId]?.name ?: "Uncategorized"
             "${df.format(Date(t.timestamp))}: ${t.type} of ${t.amount} in $catName (${t.note})"
         }
-        val history = conversationHistory.takeLast(4).joinToString("\n") { (role, content) ->
-            "$role:$content"
-        }
 
-        val prompt = """
-            On-device finance assistant. Answer using ONLY this data; say so if it's not there.
-
-            Recent transactions:
-            $txContext
-
-            $history
-            User: $userMessage
-            Assistant:
-        """.trimIndent()
+        // The transaction data goes in as its own turn rather than loose text, so the model
+        // treats it as grounding rather than as something to echo back.
+        val prompt = GemmaChat.buildPrompt(
+            systemInstruction = GemmaChat.SYSTEM_FINANCE,
+            history = conversationHistory.takeLast(4),
+            userMessage = "Here are my recent transactions:\n$txContext\n\n$userMessage"
+        )
 
         return gemma.generateResponseStream(prompt)
     }

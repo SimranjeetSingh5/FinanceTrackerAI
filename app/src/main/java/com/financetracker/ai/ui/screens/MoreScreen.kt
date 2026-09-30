@@ -24,6 +24,7 @@ fun MoreScreen(onNavigate: (String) -> Unit) {
         MoreItem("Accounts", "Balances and net worth", Icons.Filled.AccountBalanceWallet, "accounts"),
         MoreItem("Recurring & bills", "Subscriptions and scheduled payments", Icons.Filled.Autorenew, "recurring"),
         MoreItem("Savings goals", "Track progress toward targets", Icons.Filled.Flag, "goals"),
+        MoreItem("Markets", "Watch ticker prices (uses network)", Icons.Filled.CandlestickChart, "markets"),
         MoreItem("Ask your finances", "Chat with the on-device AI assistant", Icons.Filled.Chat, "chat"),
         MoreItem("AI model setup", "Manage the offline Gemma model", Icons.Filled.SmartToy, "setup"),
         MoreItem("Settings", "Currency, security, export", Icons.Filled.Settings, "settings")

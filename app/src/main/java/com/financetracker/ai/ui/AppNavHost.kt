@@ -7,6 +7,10 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PieChart
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Insights
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -17,12 +21,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.financetracker.ai.ui.components.BottomBarItem
+import com.financetracker.ai.ui.components.FinanceBottomBar
 import com.financetracker.ai.ui.components.LocalCurrencyCode
 import com.financetracker.ai.ui.screens.*
 import com.financetracker.ai.viewmodel.*
@@ -39,6 +43,7 @@ private sealed class Dest(val route: String, val label: String, val icon: androi
 const val CHAT_ROUTE = "chat"
 const val TRANSACTIONS_ROUTE = "transactions"
 const val IMPORT_ROUTE = "import_statement"
+const val MARKETS_ROUTE = "markets"
 
 @Composable
 fun AppNavHost() {
@@ -64,34 +69,20 @@ fun AppNavHost() {
     }
     val isModelReady = modelState is ModelState.Ready
 
-    val bottomItems = listOf(Dest.Dashboard, Dest.Budgets, Dest.Add, Dest.Analytics, Dest.More)
+    val bottomItems = listOf(
+        BottomBarItem("dashboard", "Home", Icons.Filled.Home, Icons.Outlined.Home),
+        BottomBarItem("budgets", "Budgets", Icons.Filled.PieChart, Icons.Outlined.PieChart),
+        BottomBarItem("add", "Add transaction", Icons.Filled.Add, Icons.Filled.Add),
+        BottomBarItem("analytics", "Analytics", Icons.Filled.Insights, Icons.Outlined.Insights),
+        BottomBarItem("more", "More", Icons.Filled.MoreHoriz, Icons.Outlined.MoreHoriz)
+    )
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                val backStackEntry by navController.currentBackStackEntryAsState()
-                val currentDestination = backStackEntry?.destination
-                bottomItems.forEach { dest ->
-                    NavigationBarItem(
-                        selected = currentDestination?.hierarchy?.any { it.route == dest.route } == true,
-                        onClick = {
-                            navController.navigate(dest.route) {
-                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = {
-                            if (dest == Dest.More && modelState !is ModelState.Ready) {
-                                BadgedBox(badge = { Badge() }) { Icon(dest.icon, contentDescription = dest.label) }
-                            } else {
-                                Icon(dest.icon, contentDescription = dest.label)
-                            }
-                        },
-                        label = { Text(dest.label) }
-                    )
-                }
-            }
+            FinanceBottomBar(
+                navController = navController,
+                items = bottomItems
+            )
         }
     ) { padding ->
         CompositionLocalProvider(LocalCurrencyCode provides currencyCode) {
@@ -170,6 +161,9 @@ fun AppNavHost() {
                         initialQuestion = pendingQuestion,
                         onInitialQuestionConsumed = { pendingQuestion = null }
                     )
+                }
+                composable(MARKETS_ROUTE) {
+                    MarketScreen(onBack = { navController.popBackStack() })
                 }
                 composable("setup") { ModelSetupScreen(financeViewModel, onBack = { navController.popBackStack() }) }
                 composable("settings") { SettingsScreen({ navController.popBackStack() }, settingsViewModel) }

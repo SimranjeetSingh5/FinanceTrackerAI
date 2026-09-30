@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * Local, on-device settings: app lock (PIN + biometric toggle), currency, and notification
@@ -45,6 +46,31 @@ class SettingsStore(context: Context) {
 
     private val _recurringRemindersEnabled = MutableStateFlow(prefs.getBoolean(KEY_RECURRING_REMINDERS, true))
     val recurringRemindersEnabledFlow: StateFlow<Boolean> = _recurringRemindersEnabled.asStateFlow()
+
+    /**
+     * Instruments the user follows, stored separately from the financial data because a ticker
+     * is not a transaction — it is a preference, and keeping it here avoids a schema change and
+     * another destructive migration.
+     */
+    private val _watchlist = MutableStateFlow(readWatchlist())
+    val watchlistFlow: StateFlow<List<String>> = _watchlist.asStateFlow()
+
+    /** Replaces the watchlist, dropping blanks and duplicates while preserving order. */
+    fun setWatchlist(symbols: List<String>) {
+        val cleaned = symbols
+            .map { it.trim().uppercase(Locale.US) }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        prefs.edit().putString(KEY_WATCHLIST, cleaned.joinToString(",")).apply()
+        _watchlist.value = cleaned
+    }
+
+    private fun readWatchlist(): List<String> =
+        prefs.getString(KEY_WATCHLIST, null)
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?: emptyList()
 
     var currencyCode: String
         get() = _currencyCode.value
@@ -107,5 +133,6 @@ class SettingsStore(context: Context) {
         private const val KEY_BUDGET_ALERTS = "budget_alerts_enabled"
         private const val KEY_RECURRING_REMINDERS = "recurring_reminders_enabled"
         private const val KEY_PIN_HASH = "pin_hash"
+        private const val KEY_WATCHLIST = "market_watchlist"
     }
 }

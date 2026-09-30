@@ -114,10 +114,24 @@ fun ModelSetupScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
                 CircularProgressIndicator(modifier = Modifier.size(36.dp))
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "Initializing machine learning environment into local memory...",
+                    text = "Loading the model into memory. The first load can take a minute on " +
+                            "a slow device — a physical phone is much faster than an emulator.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Note: a 1B model needs roughly 2 GB free. Very low-memory devices may " +
+                            "fail to load it, in which case the rest of the app keeps working " +
+                            "without AI.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                // Loading can wedge on a device that can't allocate the model, so offer a way
+                // out rather than leaving the user watching a spinner with no way back.
+                TextButton(onClick = onBack) { Text("Continue without AI") }
             }
             is ModelState.Ready -> {
                 Card(
@@ -143,15 +157,6 @@ fun ModelSetupScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
-                if (viewModel.hasPartialDownload()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Progress saved — retrying picks up where it left off.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = { viewModel.downloadAndInstallModel() },
@@ -159,6 +164,11 @@ fun ModelSetupScreen(viewModel: FinanceViewModel, onBack: () -> Unit = {}) {
                 ) {
                     Text("Retry Download Pipeline")
                 }
+                Spacer(Modifier.height(4.dp))
+                // The rest of the app — budgets, accounts, goals, the statement import — is
+                // fully functional without the model, so a model that won't load is an
+                // inconvenience rather than a dead end.
+                TextButton(onClick = onBack) { Text("Continue without AI") }
             }
         }
         }

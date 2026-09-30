@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 
 sealed class ModelState {
@@ -117,7 +118,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     "downloaded=${gemma.isModelDownloaded()}")
 
             val result = withContext(Dispatchers.IO) {
-                runCatching { gemma.initialize() }
+                // Bounded, because a device that can't allocate the model can wedge inside
+                // MediaPipe's native init and leave the UI on "Loading" with no way out.
+                runCatching {
+                    withTimeout(INIT_TIMEOUT_MS) { gemma.initialize() }
+                }
             }
 
             result.onSuccess {
@@ -320,5 +325,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             _accountBalances.value = balances
             _netWorth.value = balances.values.sum()
         }
+    }
+
+    private companion object {
+        /** Total budget for loading the model, covering both backend smoke tests. */
+        const val INIT_TIMEOUT_MS = 240_000L
     }
 }

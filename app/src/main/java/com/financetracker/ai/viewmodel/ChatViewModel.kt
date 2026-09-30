@@ -26,6 +26,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    /**
+     * The in-progress reply. Held after the stream ends until Room's flow delivers the saved
+     * assistant message, so the bubble never blinks empty between "finished streaming" and
+     * "persisted and re-read".
+     */
     private val _streamingReply = MutableStateFlow("")
     val streamingReply: StateFlow<String> = _streamingReply.asStateFlow()
 
@@ -34,7 +39,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            repo.chatHistory.collect { list -> _messages.value = list }
+            repo.chatHistory.collect { list ->
+                _messages.value = list
+                // Once the saved reply has been delivered, retire the streaming copy so the
+                // bubble doesn't render twice.
+                if (list.lastOrNull()?.role == "assistant" && _streamingReply.value.isNotBlank()) {
+                    _streamingReply.value = ""
+                }
+            }
         }
     }
 
@@ -56,14 +68,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // leaving the screen stuck on "…".
             runCatching {
                 aiEngine.chatStream(text, history, latestTxs, latestCats).collect { chunk ->
-                    _streamingReply.value += chunk
+                    // MediaPipe emits the whole accumulated response each time, so assign
+                    // rather than append — appending duplicates the text once per token.
+                    _streamingReply.value = chunk
                 }
             }.onFailure {
                 _streamingReply.value = "Couldn't reach the model: ${it.message}"
             }
 
-            repo.saveChatMessage("assistant", _streamingReply.value)
-            _streamingReply.value = ""
+            // Save, then keep the streamed text on screen until Room's flow delivers the saved
+            // message. Clearing immediately left a window where the bubble was empty and the
+            // assistant message hadn't arrived yet — visible as a blank reply.
+            val reply = _streamingReply.value
+            repo.saveChatMessage("assistant", reply)
             _isGenerating.value = false
         }
     }
